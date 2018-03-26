@@ -1,16 +1,18 @@
-#include <EEPROMex.h>			// https://github.com/thijse/Arduino-EEPROMEx
+#include <EEPROMex.h>						// https://github.com/thijse/Arduino-EEPROMEx
 
 #include <Wire.h>
-#include <Adafruit_RGBLCDShield.h>				//https://github.com/adafruit/Adafruit-RGB-LCD-Shield-Library
+#include <Adafruit_RGBLCDShield.h>				// https://github.com/adafruit/Adafruit-RGB-LCD-Shield-Library
 #include <utility/Adafruit_MCP23017.h>
 
 #include <OneWire.h>						// https://github.com/bigjosh/OneWireNoResistor
 #include <DallasTemperature.h>					// https://github.com/milesburton/Arduino-Temperature-Control-Library
 
-#include <Adafruit_MotorShield.h>
+
+#include <AccelStepper.h>					// https://github.com/adafruit/AccelStepper
+#include <Adafruit_MotorShield.h>				// https://github.com/adafruit/Adafruit_Motor_Shield_V2_Library
 #include "utility/Adafruit_MS_PWMServoDriver.h"
 
-#include <FuzzyRule.h>			// https://github.com/zerokol/eFLL
+#include <FuzzyRule.h>						// https://github.com/zerokol/eFLL
 #include <FuzzyComposition.h>
 #include <Fuzzy.h>
 #include <FuzzyRuleConsequent.h>
@@ -57,7 +59,7 @@
 
 /*-----( Constants )-----*/
 
-const int CONFIG_VERSION = 0.1;
+const int CONFIG_VERSION = 0.7;
 const int memoryBase = 32;
 
 /*----( Objects )----*/
@@ -69,7 +71,17 @@ DallasTemperature sensors(&oneWire);				// Pass our oneWire reference to Dallas 
 DeviceAddress tempSensor;					// Arrays to hold device address
 
 Adafruit_MotorShield AFMS = Adafruit_MotorShield();		// Create a motor shield object with the default I2C address
-Adafruit_StepperMotor *myMotor = AFMS.getStepper(200, 2);	// Connect a stepper motor with 200 steps per revolution (1.8 degree) to motor port #2 (M3 and M4)
+Adafruit_StepperMotor *myStepper = AFMS.getStepper(200, 2);	// Connect a stepper motor with 200 steps per revolution (1.8 degree) to motor port #2 (M3 and M4)
+
+void forwardstep() {
+  myStepper->onestep(FORWARD, MICROSTEP);			// Anti-clockwise
+}
+
+void backwardstep() {
+  myStepper->onestep(BACKWARD, MICROSTEP);			// Clockwise
+}
+
+AccelStepper stepper(forwardstep, backwardstep);		// Wrap the stepper in an AccelStepper object
 
 enum operatingState { OFF = 0, SETP, MAN, AUTO };
 enum pumpState { NORECIRC = 0, RECIRC };
@@ -147,7 +159,7 @@ byte degree[8] = 						// define the degree symbol
 };
 
 // Stepper motor
-int jogSize = 1;
+int jogSize = 16;
 
 // Processing
 Fuzzy* fuzzy = new Fuzzy();
@@ -199,6 +211,8 @@ void loop() {
 
   // process fuzzy logic
   doFunctionAtInterval(processFuzzyLogic, &lastFuzzyCompute, COMPUTE_FUZZY_EVERY);
+  
+  turnDial();
 
 }
 
@@ -256,10 +270,14 @@ void initTempSensor() {
 
 void initStepper() {
 
-  AFMS.begin();  						// create with the default frequency 1.6KHz
-  myMotor->setSpeed(STEPPER_SPEED);
+  AFMS.begin(); // Start the bottom shield
+
+  stepper.setMaxSpeed(200.0);
+  stepper.setAcceleration(100.0);
+  stepper.setCurrentPosition(0);
 
   settings.gasSettings.currentPosition = 0;
+
 }
 
 void initSettings() {
@@ -507,10 +525,7 @@ void parseUserInput() {
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("LEFT ");
-    settings.gasSettings.currentPosition = settings.gasSettings.currentPosition + jogSize;
-    myMotor->step(jogSize, FORWARD, DOUBLE);
-    lcd.setCursor(0, 1);
-    lcd.print(settings.gasSettings.currentPosition);
+    stepper.moveTo(stepper.currentPosition() - jogSize);
     return;
   }
 
@@ -518,10 +533,7 @@ void parseUserInput() {
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("RIGHT");
-    settings.gasSettings.currentPosition = settings.gasSettings.currentPosition - jogSize;
-    myMotor->step(jogSize, BACKWARD, DOUBLE);
-    lcd.setCursor(0, 1);
-    lcd.print(settings.gasSettings.currentPosition);
+    stepper.moveTo(stepper.currentPosition() + jogSize);
     return;
   }
 
@@ -529,9 +541,7 @@ void parseUserInput() {
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("MAX SET");
-    settings.gasSettings.maxPosition = settings.gasSettings.currentPosition;
-    lcd.setCursor(0, 1);
-    lcd.print(settings.gasSettings.currentPosition);
+    settings.gasSettings.maxPosition = stepper.currentPosition();
     return;
   }
 
@@ -539,9 +549,7 @@ void parseUserInput() {
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("MIN SET");
-    settings.gasSettings.minPosition = settings.gasSettings.currentPosition;
-    lcd.setCursor(0, 1);
-    lcd.print(settings.gasSettings.currentPosition);
+    settings.gasSettings.minPosition = stepper.currentPosition();
     return;
   }
 
@@ -551,8 +559,6 @@ void parseUserInput() {
     updateSettings();
     lcd.print("SETTINGS UPDATED");
     positionsSet = true;
-    lcd.setCursor(0, 1);
-    lcd.print(settings.gasSettings.currentPosition);
     return;
   }
 
@@ -561,7 +567,7 @@ void parseUserInput() {
     double difference;
     strtokIndx = strtok(NULL, ",");	// this continues where the previous call left off
     doubleFromPC = atof(strtokIndx);
-    turnDial(doubleFromPC);
+    stepper.moveTo(doubleFromPC * jogSize);
     return;
   }
 
@@ -569,28 +575,10 @@ void parseUserInput() {
 
 }
 
-void turnDial (double targetPosition) {
+void turnDial () {
 
-  double difference;
-
-  targetPosition = min(targetPosition, settings.gasSettings.maxPosition);
-  targetPosition = max(targetPosition, settings.gasSettings.minPosition);
-
-  difference = targetPosition - settings.gasSettings.currentPosition;
-
-  Serial.print ("Turning dial to "); Serial.println(targetPosition, 2);
-
-  if (difference < 0) {
-
-    myMotor->step(-difference, BACKWARD, DOUBLE);
-
-  } else {
-
-    myMotor->step(difference, FORWARD, DOUBLE);
-
-  }
-
-  settings.gasSettings.currentPosition = settings.gasSettings.currentPosition + difference;
+  stepper.run();
+  settings.gasSettings.currentPosition = stepper.currentPosition();
 
 }
 
@@ -648,7 +636,7 @@ void processFuzzyLogic() {
   Serial.print("Output: "); Serial.println(output, 2);
 
   double tPosition = settings.gasSettings.currentPosition + (output * 100 / (settings.gasSettings.maxPosition - settings.gasSettings.minPosition));
-  turnDial(tPosition);
+  stepper.moveTo(tPosition);
   //ValveSetPoint = ValveSetPoint + (output * 100 / valve.getCycleTime());
 
 }
