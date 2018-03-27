@@ -254,7 +254,6 @@ void initFuzzyLogic() {
 
 void initStepper() {
 
-
   AFMS.begin(); // Start the bottom shield
 
   stepper.setMaxSpeed(200.0);
