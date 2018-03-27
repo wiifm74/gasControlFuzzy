@@ -1,16 +1,5 @@
-#include <EEPROMex.h>						// https://github.com/thijse/Arduino-EEPROMEx
-
-#include <Wire.h>
-#include <Adafruit_RGBLCDShield.h>				// https://github.com/adafruit/Adafruit-RGB-LCD-Shield-Library
-#include <utility/Adafruit_MCP23017.h>
-
 #include <OneWire.h>						// https://github.com/bigjosh/OneWireNoResistor
 #include <DallasTemperature.h>					// https://github.com/milesburton/Arduino-Temperature-Control-Library
-
-
-#include <AccelStepper.h>					// https://github.com/adafruit/AccelStepper
-#include <Adafruit_MotorShield.h>				// https://github.com/adafruit/Adafruit_Motor_Shield_V2_Library
-#include "utility/Adafruit_MS_PWMServoDriver.h"
 
 #include <FuzzyRule.h>						// https://github.com/zerokol/eFLL
 #include <FuzzyComposition.h>
@@ -22,49 +11,30 @@
 #include <FuzzySet.h>
 #include <FuzzyRuleAntecedent.h>
 
+#include <AccelStepper.h>					// https://github.com/adafruit/AccelStepper
+#include <Adafruit_MotorShield.h>				// https://github.com/adafruit/Adafruit_Motor_Shield_V2_Library
+#include "utility/Adafruit_MS_PWMServoDriver.h"
+
 /*-----( Definitions )-----*/
 
 #define ONE_WIRE_BUS 2						// Data wire is plugged into port 2 on the Arduino
 #define ONE_WIRE_PWR 3						// Use GPIO pins for power/ground to simplify the wiring
 #define ONE_WIRE_GND 4						// Use GPIO pins for power/ground to simplify the wiring
 
-#define PUMP_WIRE_PWR 5						// Use GPIO pins for power/ground to simplify the wiring
-#define PUMP_WIRE_GND 6						// Use GPIO pins for power/ground to simplify the wiring
-
-#define BUZZER_WIRE_PWR 9
-
-#define LCD_BUFFER_SIZE 4
-#define DISPLAY_TARGET_DECIMALS 0
-#define DISPLAY_ACTUAL_DECIMALS 1
-
-//#define OFF 0x0						// These #defines make it easy to set the backlight color
-#define RED 0x1
-#define GREEN 0x2
-#define YELLOW 0x3
-#define BLUE 0x4
-#define VIOLET 0x5
-#define TEAL 0x6
-#define WHITE 0x7
-
 #define SENSOR_PRECISION 12
-
-#define STEPPER_SPEED 10
-
-#define BUZZER_FREQUENCY 750
 
 #define READ_TEMP_SENSORS_EVERY 1000
 #define READ_USER_INPUT_EVERY 20
-#define WRITE_DISPLAY_EVERY 50
-#define COMPUTE_FUZZY_EVERY 5000
+#define COMPUTE_FUZZY_EVERY 2000
 
 /*-----( Constants )-----*/
 
-const int CONFIG_VERSION = 0.7;
+const int CONFIG_VERSION = 0.5;
 const int memoryBase = 32;
 
-/*----( Objects )----*/
+const int jogSize = 16;
 
-Adafruit_RGBLCDShield lcd = Adafruit_RGBLCDShield();		// Create a RGB LCD instance
+/*----( Objects )----*/
 
 OneWire oneWire(ONE_WIRE_BUS);					// Create a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
 DallasTemperature sensors(&oneWire);				// Pass our oneWire reference to Dallas Temperature.
@@ -83,49 +53,28 @@ void backwardstep() {
 
 AccelStepper stepper(forwardstep, backwardstep);		// Wrap the stepper in an AccelStepper object
 
-enum operatingState { OFF = 0, SETP, MAN, AUTO };
-enum pumpState { NORECIRC = 0, RECIRC };
-
-struct manualSettings {
-  int setPoint;
-  pumpState pState;
-};
+enum operatingState { OFF = 0, IGNITION, MAN, AUTO, SETUP };
 
 struct gasDialSettings {
-  int currentPosition;
   int minPosition;
   int maxPosition;
 };
 
-//typedef struct manualSettings manSettings;
-
 struct allSettings {
   int version;
-  manualSettings manSettings;
   gasDialSettings gasSettings;
   double setPoint;
-  double fuzzyScale;
 };
 
 // Place default values for settings here
-allSettings settings = { CONFIG_VERSION, { 65, RECIRC }, {0, 34, 70 }, 55, -0.25 };
+allSettings settings = { CONFIG_VERSION, { 550, 1120 }, 55 };
 
 /*----( Global Variables )----*/
 
-// EEPROM
-int configAddress;
-
-//
+// Operating State
 operatingState opState = OFF;
-boolean opStateChanged = true;
-char *StrOpState[] = { "     OFF      ", "    SETUP     ", "    MANUAL    ", "     AUTO     " };
 
-operatingState selectedState = OFF;
-boolean selectedStateChanged = true;
-
-// User Input
-uint8_t lastButtonPressed = 0;
-
+// Serial input
 const byte numChars = 32;
 char receivedChars[numChars];
 char tempChars[numChars];// temporary array for use when parsing
@@ -134,112 +83,62 @@ char messageFromPC[numChars] = {0};
 double doubleFromPC = 0.0;
 boolean newData = false;
 
-boolean positionsSet = false;
-
 // Logic
-double actual = 0;
+double actual = 50;
 double error = -100;
-
-// LCD
-char lcd_buffer[LCD_BUFFER_SIZE];             			// LCD buffer used for the better string format to LCD
-bool targetChanged = true;
-bool actualChanged = true;
-uint8_t lastBacklight = OFF;
-
-byte degree[8] = 						// define the degree symbol
-{
-  B00110,
-  B01001,
-  B01001,
-  B00110,
-  B00000,
-  B00000,
-  B00000,
-  B00000
-};
-
-// Stepper motor
-int jogSize = 16;
 
 // Processing
 Fuzzy* fuzzy = new Fuzzy();
 
+FuzzySet* errorN = new FuzzySet(-100, -100, -10, -5); // Negative Error
+FuzzySet* errorZero = new FuzzySet(-15, -10, 0, 10); // Zero Error
+FuzzySet* errorP = new FuzzySet(5, 10, 100, 100); // Positive Error
+
+FuzzySet* errorChangeN = new FuzzySet(-5, -5, -0.1, -0.05); // Negative ErrorChange
+FuzzySet* errorChangeZero = new FuzzySet(-0.1, 0, 0, 0.1); // Zero ErrorChange
+FuzzySet* errorChangeP = new FuzzySet(0.05, 0.1, 5, 5); // Positive ErrorChange
+
+FuzzySet* decrease = new FuzzySet(-70, -60, -60, -50); // decrease gas
+FuzzySet* decreaseSmall = new FuzzySet(-45, -35, -35, -25); // small decrease gas
+FuzzySet* zeroChange = new FuzzySet(-20, 0, 0, 10); // zero change
+FuzzySet* increaseSmall = new FuzzySet(15, 25, 25, 35); // small increase gas
+FuzzySet* increase = new FuzzySet(40, 50, 50, 60); // increase gas
+
 // Loop Timing
-unsigned long lastTemperatureRead = 0;
-unsigned long lastFuzzyCompute = 0;
-unsigned long lastDisplayWrite = 0;
-unsigned long lastUserInput = 0;
-unsigned long lastBlinkLCD = 0;
+unsigned long nextTemperatureRead = 0;
+unsigned long nextUserInput = 0;
+unsigned long nextFuzzyCompute = 0;
+
 
 void setup() {
 
   Serial.begin(9600);
-  Serial.println("Stubby's Gas Control");
+  Serial.println("Stubby's Brewduino!");
 
-  initBuzzer();
-  initDisplay();
   initTempSensor();
   initFuzzyLogic();
   initStepper();
 
 }
 
-void doFunctionAtInterval(void (*callBackFunction)(), unsigned long *lastEvent, unsigned long Interval) {
+void doFunctionAtInterval(void (*callBackFunction)(), unsigned long *nextEvent, unsigned long interval) {
 
   unsigned long now = millis();
 
-  if ((now - *lastEvent) >= Interval)
+  if (now  >= *nextEvent)
   {
-
+    *nextEvent = now + interval;
     callBackFunction();
-    *lastEvent = now;
-
   }
 
 }
 
 void loop() {
 
-  // read user input
-  doFunctionAtInterval(readUserInput, &lastUserInput, READ_USER_INPUT_EVERY);
-
-  // read temperature sensors
-  doFunctionAtInterval(readTempSensor, &lastTemperatureRead, READ_TEMP_SENSORS_EVERY);
-
-  // write display values
-  doFunctionAtInterval(updateDisplay, &lastDisplayWrite, WRITE_DISPLAY_EVERY);
-
-  // process fuzzy logic
-  doFunctionAtInterval(processFuzzyLogic, &lastFuzzyCompute, COMPUTE_FUZZY_EVERY);
-  
-  turnDial();
-
-}
-
-void initBuzzer() {
-
-  pinMode(BUZZER_WIRE_PWR, OUTPUT);
-
-  tone(BUZZER_WIRE_PWR, BUZZER_FREQUENCY);
-  delay(20);
-  noTone(BUZZER_WIRE_PWR);
-
-}
-
-void initDisplay() {
-
-  lcd.begin(16, 2);
-  lcd.clear();
-
-  lcd.createChar(1, degree); 					// create degree symbol from the binary
-
-  lcd.setBacklight(WHITE);
-
-  lcd.print(F(" Stubbydrainer's"));
-  lcd.setCursor(0, 1);
-  lcd.print(F("   Brewduino!"));
-
-  delay(3000);							// Splash screen delay
+  doFunctionAtInterval(readUserInput, &nextUserInput, READ_USER_INPUT_EVERY);
+  doFunctionAtInterval(readTempSensor, &nextTemperatureRead, READ_TEMP_SENSORS_EVERY);
+  doFunctionAtInterval(processFuzzyLogic, &nextFuzzyCompute, COMPUTE_FUZZY_EVERY);
+  stepper.run();
 
 }
 
@@ -255,16 +154,98 @@ void initTempSensor() {
   if (!sensors.getAddress(tempSensor, 0)) {
 
     Serial.println("Unable to find address for Device 0");
-    displayError("   No sensor!    ");
+    //displayError("   No sensor!    ");
 
   } else {
 
     sensors.setResolution(tempSensor, SENSOR_PRECISION);
+    sensors.setWaitForConversion(false);  			// makes it async
     sensors.requestTemperatures();				// prime the pump for the next one - but don't wait
 
     Serial.println("Success!");
 
   }
+
+}
+
+void initFuzzyLogic() {
+
+  FuzzyInput* error = new FuzzyInput(1);// With its ID in param
+
+  error->addFuzzySet(errorN); // Add FuzzySet errorN to error
+  error->addFuzzySet(errorZero); // Add FuzzySet errorZero to error
+  error->addFuzzySet(errorP); // Add FuzzySet errorN to error
+
+  fuzzy->addFuzzyInput(error);  // Add FuzzyInput to Fuzzy object
+
+  FuzzyInput* errorChange = new FuzzyInput(2);// With its ID in param
+
+  errorChange->addFuzzySet(errorChangeN);
+  errorChange->addFuzzySet(errorChangeZero);
+  errorChange->addFuzzySet(errorChangeP);
+
+  fuzzy->addFuzzyInput(errorChange); // Add FuzzyInput to Fuzzy object
+
+  FuzzyOutput* gasOutput = new FuzzyOutput(1);// With its ID in param
+
+  gasOutput->addFuzzySet(decrease); // Add FuzzySet decrease to gasOuput
+  gasOutput->addFuzzySet(decreaseSmall); // Add FuzzySet decreaseSmall to gasOuput
+  gasOutput->addFuzzySet(zeroChange); // Add FuzzySet zeroChange to gasOuput
+  gasOutput->addFuzzySet(increaseSmall); // Add FuzzySet increaseSmall to gasOuput
+  gasOutput->addFuzzySet(increase); // Add FuzzySet decrease to gasOuput
+
+  fuzzy->addFuzzyOutput(gasOutput); // Add FuzzyOutput to Fuzzy object
+
+  FuzzyRuleAntecedent* ifErrorN = new FuzzyRuleAntecedent(); // Instantiating an Antecedent to expression
+  ifErrorN->joinSingle(errorN); // Adding corresponding FuzzySet to Antecedent object
+
+  FuzzyRuleAntecedent* ifErrorZero = new FuzzyRuleAntecedent(); // Instantiating an Antecedent to expression
+  ifErrorZero->joinSingle(errorZero); // Adding corresponding FuzzySet to Antecedent object
+
+  FuzzyRuleAntecedent* ifErrorP = new FuzzyRuleAntecedent(); // Instantiating an Antecedent to expression
+  ifErrorP->joinSingle(errorP); // Adding corresponding FuzzySet to Antecedent object
+
+  FuzzyRuleAntecedent* ifErrorZeroANDErrorChangeN = new FuzzyRuleAntecedent(); // Instantiating an Antecedent to expression
+  ifErrorZeroANDErrorChangeN->joinWithAND(errorZero, errorChangeN);
+
+  FuzzyRuleAntecedent* ifErrorZeroANDErrorChangeP = new FuzzyRuleAntecedent(); // Instantiating an Antecedent to expression
+  ifErrorZeroANDErrorChangeP->joinWithAND(errorZero, errorChangeP);
+
+  FuzzyRuleConsequent* thenGasOutputDecrease = new FuzzyRuleConsequent(); // Instantiating a Consequent to expression
+  thenGasOutputDecrease->addOutput(decrease);// Adding corresponding FuzzySet to Consequent object
+
+  FuzzyRuleConsequent* thenGasOutputDecreaseSmall = new FuzzyRuleConsequent(); // Instantiating a Consequent to expression
+  thenGasOutputDecreaseSmall->addOutput(decreaseSmall);// Adding corresponding FuzzySet to Consequent object
+
+  FuzzyRuleConsequent* thenGasOutputZeroChange = new FuzzyRuleConsequent(); // Instantiating a Consequent to expression
+  thenGasOutputZeroChange->addOutput(zeroChange);// Adding corresponding FuzzySet to Consequent object
+
+  FuzzyRuleConsequent* thenGasOutputIncreaseSmall = new FuzzyRuleConsequent(); // Instantiating a Consequent to expression
+  thenGasOutputIncreaseSmall->addOutput(increaseSmall);// Adding corresponding FuzzySet to Consequent object
+
+  FuzzyRuleConsequent* thenGasOutputIncrease = new FuzzyRuleConsequent(); // Instantiating a Consequent to expression
+  thenGasOutputIncrease->addOutput(increase);// Adding corresponding FuzzySet to Consequent object
+
+
+  // FuzzyRule "IF error is Zero THEN gasOutput is zeroChange"
+  FuzzyRule* fuzzyRule01 = new FuzzyRule(1, ifErrorZero, thenGasOutputZeroChange); // Passing the Antecedent and the Consequent of expression
+  fuzzy->addFuzzyRule(fuzzyRule01); // Adding FuzzyRule to Fuzzy object
+
+  // FuzzyRule "IF error is negative THEN gasOutput is increase"
+  FuzzyRule* fuzzyRule02 = new FuzzyRule(2, ifErrorN, thenGasOutputIncrease); // Passing the Antecedent and the Consequent of expression
+  fuzzy->addFuzzyRule(fuzzyRule02); // Adding FuzzyRule to Fuzzy object
+
+  // FuzzyRule "IF error is positive THEN gasOutput is decrease"
+  FuzzyRule* fuzzyRule03 = new FuzzyRule(3, ifErrorP, thenGasOutputDecrease); // Passing the Antecedent and the Consequent of expression
+  fuzzy->addFuzzyRule(fuzzyRule03); // Adding FuzzyRule to Fuzzy object
+
+  // Fuzzyrule "IF error is Zero AND error change is positive THEN gasOutput decreaseSmall
+  FuzzyRule* fuzzyRule04 = new FuzzyRule(4, ifErrorZeroANDErrorChangeP, thenGasOutputDecreaseSmall); // Passing the Antecedent and the Consequent of expression
+  fuzzy->addFuzzyRule(fuzzyRule04); // Adding FuzzyRule to Fuzzy object
+
+  // Fuzzyrule "IF error is Zero AND error change is negative THEN gasOutput increaseSmall
+  FuzzyRule* fuzzyRule05 = new FuzzyRule(5, ifErrorZeroANDErrorChangeN, thenGasOutputIncreaseSmall); // Passing the Antecedent and the Consequent of expression
+  fuzzy->addFuzzyRule(fuzzyRule05); // Adding FuzzyRule to Fuzzy object
 
 }
 
@@ -276,204 +257,20 @@ void initStepper() {
   stepper.setAcceleration(100.0);
   stepper.setCurrentPosition(0);
 
-  settings.gasSettings.currentPosition = 0;
-
 }
 
-void initSettings() {
+void readTempSensor() {
 
-  allSettings tempSettings;
-  int timeItTook = 0;
-
-  EEPROM.setMemPool(memoryBase, EEPROMSizeMega);
-  configAddress = EEPROM.getAddress(sizeof(allSettings));
-  timeItTook = EEPROM.readBlock(configAddress, tempSettings);	// Read EEPROM settings to temporary location to compare CONFIG_VERSION
-
-  // Update EEPROM from new settings configuration if necessary
-  if (tempSettings.version != CONFIG_VERSION)
-  {
-    timeItTook = EEPROM.writeBlock(configAddress, settings);	// Settings have not been saved before or settings configuration has changed
-  }
-
-  timeItTook = EEPROM.readBlock(configAddress, settings);	// Read settings from EEPROM
-
-}
-
-void initFuzzyLogic() {
-
-  // FuzzyInput error equals distance from current temp to target temp
-  FuzzyInput* error = new FuzzyInput(1);
-
-  FuzzySet* ErrorNeg = new FuzzySet(-100, -100, -10, 0);
-  FuzzySet* ErrorZero = new FuzzySet(-10, 0, 0, 10);
-  FuzzySet* ErrorPos = new FuzzySet(0, 10, 100, 100);
-
-  error->addFuzzySet(ErrorNeg);
-  error->addFuzzySet(ErrorZero);
-  error->addFuzzySet(ErrorPos);
-
-  fuzzy->addFuzzyInput(error);
-
-  // FuzzyInput errorChange = rate of change of temp in degrees per second
-  FuzzyInput* errorChange = new FuzzyInput(2);
-
-  FuzzySet* ChangeNeg = new FuzzySet(-5, -5, -1, 0);
-  FuzzySet* ChangeZero = new FuzzySet(-2, -1, 1, 2);
-  FuzzySet* ChangePos = new FuzzySet(0, 1, 5, 5);
-
-  errorChange->addFuzzySet(ChangeNeg);
-  errorChange->addFuzzySet(ChangeZero);
-  errorChange->addFuzzySet(ChangePos);
-
-  fuzzy->addFuzzyInput(errorChange);
-
-  // FuzzyOutput
-  FuzzyOutput* flowChange = new FuzzyOutput(1);
-
-  FuzzySet* LargeDecrease = (-10, -10, -4, -3);
-  FuzzySet* SmallDecrease = (-5, -4, -2, -1);
-  FuzzySet* ZeroChange = (-2, -1, 1, 2);
-  FuzzySet* SmallIncrease = (1, 2, 4, 5);
-  FuzzySet* LargeIncrease = (3, 4, 10, 10);
-
-  flowChange->addFuzzySet(LargeDecrease);
-  flowChange->addFuzzySet(SmallDecrease);
-  flowChange->addFuzzySet(ZeroChange);
-  flowChange->addFuzzySet(SmallIncrease);
-  flowChange->addFuzzySet(LargeIncrease);
-
-  fuzzy->addFuzzyOutput(flowChange);
-
-
-  FuzzyRuleConsequent* thenLargeDecrease = new FuzzyRuleConsequent();
-  thenLargeDecrease->addOutput(LargeDecrease);
-  FuzzyRuleConsequent* thenSmallDecrease = new FuzzyRuleConsequent();
-  thenSmallDecrease->addOutput(SmallDecrease);
-  FuzzyRuleConsequent* thenZeroChange = new FuzzyRuleConsequent();
-  thenZeroChange->addOutput(ZeroChange);
-  FuzzyRuleConsequent* thenSmallIncrease = new FuzzyRuleConsequent();
-  thenSmallIncrease->addOutput(SmallIncrease);
-  FuzzyRuleConsequent* thenLargeIncrease = new FuzzyRuleConsequent();
-  thenLargeIncrease->addOutput(LargeIncrease);
-
-  //Rules
-
-  // If error is zero and change is zero, then flowchange is zero
-  FuzzyRuleAntecedent* ifErrorZeroANDChangeZero = new FuzzyRuleAntecedent();
-  ifErrorZeroANDChangeZero->joinWithAND(ErrorZero, ChangeZero);
-  FuzzyRule* fuzzyRule1 = new FuzzyRule(1, ifErrorZeroANDChangeZero, thenZeroChange);
-  fuzzy->addFuzzyRule(fuzzyRule1);
-
-  // If error is zero and change is neg, then flowchange is small increase
-  FuzzyRuleAntecedent* ifErrorZeroANDChangeNeg = new FuzzyRuleAntecedent();
-  ifErrorZeroANDChangeNeg->joinWithAND(ErrorZero, ChangeNeg);
-  FuzzyRule* fuzzyRule2 = new FuzzyRule(2, ifErrorZeroANDChangeNeg, thenSmallIncrease);
-  fuzzy->addFuzzyRule(fuzzyRule2);
-
-  // If error is zero and change is pos, then flowchange is small decrease
-  FuzzyRuleAntecedent* ifErrorZeroANDChangePos = new FuzzyRuleAntecedent();
-  ifErrorZeroANDChangePos->joinWithAND(ErrorZero, ChangePos);
-  FuzzyRule* fuzzyRule3 = new FuzzyRule(3, ifErrorZeroANDChangePos, thenSmallDecrease);
-  fuzzy->addFuzzyRule(fuzzyRule3);
-
-  // IF error is negative and change is zero, then flowchange is small increase
-  FuzzyRuleAntecedent* ifErrorNegANDChangeZero = new FuzzyRuleAntecedent();
-  ifErrorNegANDChangeZero->joinWithAND(ErrorNeg, ChangeZero);
-  FuzzyRule* fuzzyRule4 = new FuzzyRule(4, ifErrorNegANDChangeZero, thenSmallIncrease);
-  fuzzy->addFuzzyRule(fuzzyRule4);
-
-  // If error is negative and change is neg, then flowchange is large increase
-  FuzzyRuleAntecedent* ifErrorNegANDChangeNeg = new FuzzyRuleAntecedent();
-  ifErrorNegANDChangeNeg->joinWithAND(ErrorNeg, ChangeNeg);
-  FuzzyRule* fuzzyRule5 = new FuzzyRule(5, ifErrorNegANDChangeNeg, thenLargeIncrease);
-  fuzzy->addFuzzyRule(fuzzyRule5);
-
-  // if error is negative and change is positive, then flowchange is zero
-  FuzzyRuleAntecedent* ifErrorNegANDChangePos = new FuzzyRuleAntecedent();
-  ifErrorNegANDChangePos->joinWithAND(ErrorNeg, ChangePos);
-  FuzzyRule* fuzzyRule6 = new FuzzyRule(6, ifErrorNegANDChangePos, thenZeroChange);
-  fuzzy->addFuzzyRule(fuzzyRule6);
-
-  // if error is positive and change is zero, then flowchange is small decrease
-  FuzzyRuleAntecedent* ifErrorPosANDChangeZero = new FuzzyRuleAntecedent();
-  ifErrorPosANDChangeZero->joinWithAND(ErrorPos, ChangeZero);
-  FuzzyRule* fuzzyRule7 = new FuzzyRule(7, ifErrorPosANDChangeZero, thenSmallDecrease);
-  fuzzy->addFuzzyRule(fuzzyRule7);
-
-  // if erro is positive and change is positive, then flow is large decrease
-  FuzzyRuleAntecedent* ifErrorPosANDChangePos = new FuzzyRuleAntecedent();
-  ifErrorPosANDChangePos->joinWithAND(ErrorPos, ChangePos);
-  FuzzyRule* fuzzyRule8 = new FuzzyRule(8, ifErrorPosANDChangePos, thenLargeDecrease);
-  fuzzy->addFuzzyRule(fuzzyRule8);
-
-  // if error is positive and change is negative, then flowchange is zero
-  FuzzyRuleAntecedent* ifErrorPosANDChangeNeg = new FuzzyRuleAntecedent();
-  ifErrorPosANDChangeNeg->joinWithAND(ErrorPos, ChangeNeg);
-  FuzzyRule* fuzzyRule9 = new FuzzyRule(9, ifErrorPosANDChangeNeg, thenZeroChange);
-  fuzzy->addFuzzyRule(fuzzyRule9);
+  actual = double(sensors.getTempC(tempSensor));
+  sensors.requestTemperatures(); 				// prime the pump for the next one - but don't wait
 
 }
 
 void readUserInput() {
+  readSerialInput();
+}
 
-  uint8_t buttons = readButtons();
-
-  if (buttons) {
-
-    switch (opState) {
-      case OFF:
-
-      case SETP:
-
-      case MAN:
-      /*if (buttons & BUTTON_UP)
-        {
-        settings.manSettings.setPoint = min(102,settings.manSettings.setPoint + 1);
-        targetChanged = true;
-        }
-        if (buttons & BUTTON_DOWN)
-        {
-        settings.manSettings.setPoint = max(0,settings.manSettings.setPoint - 1);
-        targetChanged = true;
-        }
-        if (buttons & BUTTON_SELECT)
-        {
-        updateSettings();
-        }*/
-      case AUTO:
-
-      default:
-        //do nothing
-        break;
-    }
-
-  }
-
-  if (buttons) {
-
-    if (buttons & BUTTON_LEFT) {
-
-      selectedState = max(0, int(selectedState) - 1);
-      selectedStateChanged = true;
-
-    }
-
-    if (buttons & BUTTON_RIGHT) {
-
-      selectedState = min(3, int(selectedState) + 1);
-      selectedStateChanged = true;
-
-    }
-
-    if (buttons & BUTTON_SELECT) {
-
-      opState = selectedState;
-      opStateChanged = true;
-      actualChanged = true;
-
-    }
-
-  }
+void readSerialInput() {
 
   static boolean recvInProgress = false;
   static byte ndx = 0;
@@ -507,287 +304,179 @@ void readUserInput() {
   if (newData == true) {
     strcpy(tempChars, receivedChars);
     // this temporary copy is necessary to protect the original data
-    //   because strtok() used in parseData() replaces the commas with \0
-    parseUserInput();
+    //   because strtok() used in parseData() replaces the commas with \0
+    parseSerialInput();
     newData = false;
   }
 
 }
 
-void parseUserInput() {
+void parseSerialInput() {
 
   // split the data into its parts
   char * strtokIndx;	// this is used by strtok() as an index
   strtokIndx = strtok(tempChars, ",");	// get the first part - the string
   strcpy(messageFromPC, strtokIndx);	// copy it to messageFromPC
+  strtokIndx = strtok(NULL, ",");	// this continues where the previous call left off
+  doubleFromPC = atof(strtokIndx);
 
-  if (String(messageFromPC) == "L") {
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("LEFT ");
-    stepper.moveTo(stepper.currentPosition() - jogSize);
-    return;
+  switch (opState) {
+
+    case 2:		//MANUAL
+      if (String(messageFromPC) == "L") {
+        Serial.print("Moving to "); Serial.println(stepper.currentPosition() + doubleFromPC);
+        stepper.moveTo(stepper.currentPosition() + doubleFromPC);
+        return;
+      }
+
+      if (String(messageFromPC) == "R") {
+        Serial.print("Moving to "); Serial.println(stepper.currentPosition() - doubleFromPC);
+        stepper.moveTo(stepper.currentPosition() - doubleFromPC);
+        return;
+      }
+      if (String(messageFromPC) == "DIAL") {
+        Serial.print("Moving to "); Serial.println(doubleFromPC);
+        stepper.moveTo(doubleFromPC);
+        return;
+      }
+
+    case 3:		//AUTO
+      if (String(messageFromPC) == "SETPOINT") {
+        Serial.print("Setting target temperature to "); Serial.println(doubleFromPC);
+        //settings.setPoint = doubleFromPC;
+        //targetChanged = true;
+        return;
+      }
+
+    case 4:		//SETUP
+      if (String(messageFromPC) == "MAX") {
+        Serial.print("Setting maximum dial position to "); Serial.println(doubleFromPC);
+        //settings.gasSettings.maxPosition = stepper.currentPosition();
+        //updateSettings();
+        return;
+      }
+
+      if (String(messageFromPC) == "MIN") {
+        Serial.print("Setting minimum dial position to "); Serial.println(doubleFromPC);
+        //settings.gasSettings.minPosition = stepper.currentPosition();
+        //updateSettings();
+        return;
+      }
+
+    default:
+      if (String(messageFromPC) == "MODE") {
+
+        // enum operatingState { OFF = 0, IGNITION, MAN, AUTO, SETUP };
+
+        Serial.print("Mode change ");
+        // strtokIndx = strtok(NULL, ",");	// this continues where the previous call left off
+        //doubleFromPC = atof(strtokIndx);
+
+        switch ((int)doubleFromPC) {
+          case 0:
+            Serial.println("OFF");
+            opState = OFF;
+            Serial.print("Moving to "); Serial.println(0);
+            stepper.moveTo(0);
+            break;
+
+          case 1:
+            Serial.println("IGNITION");
+            opState = IGNITION;
+            Serial.println("Turning on gas now! IGNITE!");
+            stepper.runToNewPosition(1120);
+            delay(5000);
+            Serial.println("Mode change MANUAL");
+            opState = MAN;
+            Serial.print("Moving to "); Serial.println(550);
+            stepper.moveTo(550);
+            break;
+
+          case 2:
+            Serial.println("MANUAL");
+            opState = MAN;
+            break;
+
+          case 3:
+            Serial.println("AUTO");
+            opState = AUTO;
+            break;
+
+          case 4:
+            Serial.println("SETUP");
+            opState = SETUP;
+            break;
+
+          default:
+            Serial.println("not recognised!");
+        }
+
+        return;
+      }
+      Serial.println ("Command not recognised in this mode.");
+
   }
-
-  if (String(messageFromPC) == "R") {
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("RIGHT");
-    stepper.moveTo(stepper.currentPosition() + jogSize);
-    return;
-  }
-
-  if (String(messageFromPC) == "MAX") {
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("MAX SET");
-    settings.gasSettings.maxPosition = stepper.currentPosition();
-    return;
-  }
-
-  if (String(messageFromPC) == "MIN") {
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("MIN SET");
-    settings.gasSettings.minPosition = stepper.currentPosition();
-    return;
-  }
-
-  if (String(messageFromPC) == "UPDATE") {
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    updateSettings();
-    lcd.print("SETTINGS UPDATED");
-    positionsSet = true;
-    return;
-  }
-
-  if (String(messageFromPC) == "DIAL") {
-
-    double difference;
-    strtokIndx = strtok(NULL, ",");	// this continues where the previous call left off
-    doubleFromPC = atof(strtokIndx);
-    stepper.moveTo(doubleFromPC * jogSize);
-    return;
-  }
-
-  else Serial.println ("Command not recognised.");
-
-}
-
-void turnDial () {
-
-  stepper.run();
-  settings.gasSettings.currentPosition = stepper.currentPosition();
-
-}
-
-uint8_t readButtons() {
-
-  uint8_t buttons = lcd.readButtons();
-
-  if (buttons) {
-
-    tone(BUZZER_WIRE_PWR, BUZZER_FREQUENCY);
-    delay(20);
-    noTone(BUZZER_WIRE_PWR);
-
-    lastButtonPressed = buttons;
-    return 0;							//Wait until button is release before sending
-
-  }
-  else {
-
-    buttons = lastButtonPressed;
-    lastButtonPressed = 0;
-    return buttons;						//Button is released - send!
-
-  }
-
-}
-
-void readTempSensor() {
-
-  double previousActual = actual;
-  actual = double(sensors.getTempC(tempSensor));
-
-  if (previousActual != actual) {
-    actualChanged = true;
-  }
-  sensors.requestTemperatures(); 				// prime the pump for the next one - but don't wait
 
 }
 
 void processFuzzyLogic() {
 
-  double previousError = error;
-  Serial.print("previousError: "); Serial.println(previousError, 2);
+  if (opState == AUTO) {
 
-  error = actual - settings.setPoint;
-  Serial.print("Error: "); Serial.println(error, 2);
-  Serial.print("Difference: "); Serial.println(error - previousError, 2);
-  fuzzy->setInput(1, error);
-  fuzzy->setInput(2, (error - previousError) / (COMPUTE_FUZZY_EVERY / 1000.0));
+    double previousError = error;
 
-  fuzzy->fuzzify();
+    //actual = actual + random(-1, 1);
+    Serial.print("Actual: "); Serial.println(actual, 2);
+    error = actual - 50;
+    fuzzy->setInput(1, error);
 
-  //double output = double(fuzzy->defuzzify(1));
-  double output = fuzzy->defuzzify(1);
-  Serial.print("Output: "); Serial.println(output, 2);
+    fuzzy->setInput(2, (error - previousError) / (COMPUTE_FUZZY_EVERY / 1000.0));
 
-  double tPosition = settings.gasSettings.currentPosition + (output * 100 / (settings.gasSettings.maxPosition - settings.gasSettings.minPosition));
-  stepper.moveTo(tPosition);
-  //ValveSetPoint = ValveSetPoint + (output * 100 / valve.getCycleTime());
+    fuzzy->fuzzify();
+    /*
+      Serial.print("error: ");
+      Serial.print(errorN->getPertinence());
+      Serial.print(", ");
+      Serial.print(errorZero->getPertinence());
+      Serial.print(", ");
+      Serial.println(errorP->getPertinence());
 
-}
+      Serial.print("errorChange: ");
+      Serial.print(errorChangeN->getPertinence());
+      Serial.print(", ");
+      Serial.print(errorChangeZero->getPertinence());
+      Serial.print(", ");
+      Serial.println(errorChangeP->getPertinence());
 
-void updateDisplay() {
+      Serial.print("gasOutput: ");
+      Serial.print(decrease->getPertinence());
+      Serial.print(", ");
+      Serial.print(decreaseSmall->getPertinence());
+      Serial.print(", ");
+      Serial.print(zeroChange->getPertinence());
+      Serial.print(", ");
+      Serial.print(increaseSmall->getPertinence());
+      Serial.print(", ");
+      Serial.println(increase->getPertinence());
 
-  if (selectedStateChanged) {
+      bool wasTheRuleFired;
 
-    lcd.setCursor(0, 0);
-    lcd.print((selectedState == OFF ? " " : "<"));
-    lcd.print(StrOpState[int(selectedState)]);
-    lcd.print((selectedState == AUTO ? " " : ">"));
-
-    //lcd.setCursor(0, 1);
-    //lcd.print("                ");
-
-  }
-
-  switch (opState) {
-
-    case OFF:
-
-      if (actualChanged) {
-
-        lcd.setCursor(0, 1);
-        lcd.print("   A=");
-        dtostrf(actual, 5, DISPLAY_ACTUAL_DECIMALS, lcd_buffer);
-        lcd.print(lcd_buffer);
-        lcd.write(1);
-        lcd.print("c    ");
-
+      for (int i = 1; i <= 5; i++) {
+        wasTheRuleFired = fuzzy->isFiredRule(i);
+        if (wasTheRuleFired) Serial.println(i);
       }
+    */
+    float output = fuzzy->defuzzify(1);
 
-      break;
-
-    case SETP:
-
-      lcd.setCursor(0, 1);
-      lcd.print("                ");
-
-      break;
-
-    default:
-
-      if (opStateChanged) {
-
-        lcd.setCursor(0, 1);
-        lcd.print("T/A=");
-
-        lcd.setCursor(7, 1);
-        lcd.print("/");
-
-        lcd.setCursor(13, 1);
-        lcd.write(1);
-        lcd.print("c");
-
-        targetChanged = true;
-        actualChanged = true;
-
-      }
-
-      if (targetChanged) {
-
-        lcd.setCursor(4, 1);
-        dtostrf(settings.manSettings.setPoint, 3, DISPLAY_TARGET_DECIMALS, lcd_buffer);
-        lcd.print(lcd_buffer);
-
-      }
-
-      if (actualChanged) {
-
-        lcd.setCursor(8, 1);
-        dtostrf(actual, 5, DISPLAY_ACTUAL_DECIMALS, lcd_buffer);
-        lcd.print(lcd_buffer);
-
-      }
-
-      break;
-
-  }
-
-  opStateChanged = false;
-  selectedStateChanged = false;
-  targetChanged = false;
-  actualChanged = false;
-
-}
-
-void blinkLCD(uint8_t colour = RED) {
-
-  if (lastBacklight != colour) {
-
-    lcd.setBacklight(colour);
-    lastBacklight = colour;
-
-    if (colour == RED) {
-
-      tone(BUZZER_WIRE_PWR, BUZZER_FREQUENCY);
-
-    }
-
-  }
-  else {
-
-    lcd.setBacklight(OFF);
-    lastBacklight = OFF;
-    noTone(BUZZER_WIRE_PWR);
+    //Serial.print("Output: "); Serial.println(output, 2);
+    int tPosition = (int)(stepper.currentPosition() + ((output / 100) * (1120 - 550)));
+    tPosition = min(1120, tPosition);
+    tPosition = max(550, tPosition);
+    stepper.moveTo(tPosition);
+    Serial.print("tPosition: "); Serial.println(tPosition);
 
   }
 
 }
 
-void displaySuccess(char message[]) {
 
-  lcd.setCursor(0, 0);
-  lcd.print(message);
-  lcd.setCursor(0, 1);
-  lcd.print("                ");
-
-  blinkLCD(GREEN);
-  delay(1000);
-  lcd.setBacklight(WHITE);
-
-}
-
-void blinkRed() {
-
-  blinkLCD(RED);
-
-}
-
-void displayError(char message[]) {
-
-  lcd.setCursor(0, 0);
-  lcd.print("     Error!     ");
-  lcd.setCursor(0, 1);
-  lcd.print(message);
-
-  while (!readButtons()) {
-
-    doFunctionAtInterval(blinkRed, &lastBlinkLCD, 250);
-
-  }
-
-  opState = OFF;
-  lcd.setBacklight(WHITE);
-
-}
-
-void updateSettings() {
-
-  EEPROM.updateBlock(configAddress, settings);
-
-}
