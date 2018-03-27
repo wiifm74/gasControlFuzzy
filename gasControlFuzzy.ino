@@ -29,6 +29,9 @@
 
 /*-----( Constants )-----*/
 
+const int CONFIG_VERSION = 0.5;
+const int memoryBase = 32;
+
 const int jogSize = 16;
 
 /*----( Objects )----*/
@@ -52,7 +55,24 @@ AccelStepper stepper(forwardstep, backwardstep);		// Wrap the stepper in an Acce
 
 enum operatingState { OFF = 0, IGNITION, MAN, AUTO, SETUP };
 
+struct gasDialSettings {
+  int minPosition;
+  int maxPosition;
+};
+
+struct allSettings {
+  int version;
+  double minPosition;
+  double maxPosition;
+  double setPoint;
+};
+
 /*----( Global Variables )----*/
+
+// Place default values for settings here
+allSettings settings = { CONFIG_VERSION, 550, 1120, 55 };
+
+double maxPosition = 1120;
 
 // Operating State
 operatingState opState = OFF;
@@ -234,6 +254,7 @@ void initFuzzyLogic() {
 
 void initStepper() {
 
+
   AFMS.begin(); // Start the bottom shield
 
   stepper.setMaxSpeed(200.0);
@@ -287,7 +308,7 @@ void readSerialInput() {
   if (newData == true) {
     strcpy(tempChars, receivedChars);
     // this temporary copy is necessary to protect the original data
-    //   because strtok() used in parseData() replaces the commas with \0
+    //   because strtok() used in parseData() replaces the commas with \0
     parseSerialInput();
     newData = false;
   }
@@ -303,100 +324,94 @@ void parseSerialInput() {
   strtokIndx = strtok(NULL, ",");	// this continues where the previous call left off
   doubleFromPC = atof(strtokIndx);
 
-  switch (opState) {
 
-    case 2:		//MANUAL
-      if (String(messageFromPC) == "L") {
-        Serial.print("Moving to "); Serial.println(stepper.currentPosition() + doubleFromPC);
-        stepper.moveTo(stepper.currentPosition() + doubleFromPC);
-        return;
-      }
+  if (String(messageFromPC) == "L") {
+    if (opState == MAN) {
+      Serial.print("Moving to "); Serial.println(stepper.currentPosition() + doubleFromPC);
+      stepper.moveTo(stepper.currentPosition() + doubleFromPC);
+    }
+    return;
+  }
 
-      if (String(messageFromPC) == "R") {
-        Serial.print("Moving to "); Serial.println(stepper.currentPosition() - doubleFromPC);
-        stepper.moveTo(stepper.currentPosition() - doubleFromPC);
-        return;
-      }
-      if (String(messageFromPC) == "DIAL") {
-        Serial.print("Moving to "); Serial.println(doubleFromPC);
-        stepper.moveTo(doubleFromPC);
-        return;
-      }
+  if (String(messageFromPC) == "R") {
+    Serial.print("Moving to "); Serial.println(stepper.currentPosition() - doubleFromPC);
+    stepper.moveTo(stepper.currentPosition() - doubleFromPC);
+    return;
+  }
 
-    case 3:		//AUTO
-      if (String(messageFromPC) == "SETPOINT") {
-        Serial.print("Setting target temperature to "); Serial.println(doubleFromPC);
-        //settings.setPoint = doubleFromPC;
-        //targetChanged = true;
-        return;
-      }
+  if (String(messageFromPC) == "DIAL") {
+    Serial.print("Moving to "); Serial.println(doubleFromPC);
+    stepper.moveTo(doubleFromPC);
+    return;
+  }
 
-    case 4:		//SETUP
-      if (String(messageFromPC) == "MAX") {
-        Serial.print("Setting maximum dial position to "); Serial.println(doubleFromPC);
-        //settings.gasSettings.maxPosition = stepper.currentPosition();
-        //updateSettings();
-        return;
-      }
+  if (String(messageFromPC) == "SETPOINT") {
+    Serial.print("Setting target temperature to "); Serial.println(doubleFromPC);
+    settings.setPoint = doubleFromPC;
+    //targetChanged = true;
+    return;
+  }
 
-      if (String(messageFromPC) == "MIN") {
-        Serial.print("Setting minimum dial position to "); Serial.println(doubleFromPC);
-        //settings.gasSettings.minPosition = stepper.currentPosition();
-        //updateSettings();
-        return;
-      }
+  if (String(messageFromPC) == "MAX") {
+    Serial.print("Setting maximum dial position to "); Serial.println(doubleFromPC);
+    settings.maxPosition = doubleFromPC;
+    updateSettings();
+    return;
+  }
 
-    default:
-      if (String(messageFromPC) == "MODE") {
+  if (String(messageFromPC) == "MIN") {
+    Serial.print("Setting minimum dial position to "); Serial.println(doubleFromPC);
+    settings.minPosition = doubleFromPC;
+    updateSettings();
+    return;
+  }
 
-        // enum operatingState { OFF = 0, IGNITION, MAN, AUTO, SETUP };
+  if (String(messageFromPC) == "MODE") {
 
-        Serial.print("Mode change ");
-        // strtokIndx = strtok(NULL, ",");	// this continues where the previous call left off
-        //doubleFromPC = atof(strtokIndx);
+    Serial.print("Mode change ");
 
-        switch ((int)doubleFromPC) {
-          case 0:
-            Serial.println("OFF");
-            opState = OFF;
-            Serial.print("Moving to "); Serial.println(0);
-            stepper.moveTo(0);
-            break;
+    switch ((int)doubleFromPC) {
+      case 0:
+        Serial.println("OFF");
+        opState = OFF;
+        Serial.print("Moving to "); Serial.println(0);
+        stepper.moveTo(0);
+        break;
 
-          case 1:
-            Serial.println("IGNITION");
-            opState = IGNITION;
-            Serial.println("Turning on gas now! IGNITE!");
-            stepper.runToNewPosition(1120);
-            delay(5000);
-            Serial.println("Mode change MANUAL");
-            opState = MAN;
-            Serial.print("Moving to "); Serial.println(550);
-            stepper.moveTo(550);
-            break;
+      case 1:
+        Serial.println("IGNITION");
+        opState = IGNITION;
+        Serial.println("Turning on gas now! IGNITE!");
+        stepper.runToNewPosition(settings.maxPosition);
+        delay(5000);
+        Serial.println("Mode change MANUAL");
+        opState = MAN;
+        Serial.print("Moving to "); Serial.println(settings.minPosition);
+        stepper.moveTo(settings.minPosition);
+        break;
 
-          case 2:
-            Serial.println("MANUAL");
-            opState = MAN;
-            break;
+      case 2:
+        Serial.println("MANUAL");
+        opState = MAN;
+        break;
 
-          case 3:
-            Serial.println("AUTO");
-            opState = AUTO;
-            break;
+      case 3:
+        Serial.println("AUTO");
+        opState = AUTO;
+        break;
 
-          case 4:
-            Serial.println("SETUP");
-            opState = SETUP;
-            break;
+      case 4:
+        Serial.println("SETUP");
+        opState = SETUP;
+        break;
 
-          default:
-            Serial.println("not recognised!");
-        }
+      default:
+        Serial.println("not recognised!");
+    }
 
-        return;
-      }
-      Serial.println ("Command not recognised in this mode.");
+    return;
+
+    Serial.println ("Command not recognised.");
 
   }
 
@@ -408,9 +423,8 @@ void processFuzzyLogic() {
 
     double previousError = error;
 
-    //actual = actual + random(-1, 1);
     Serial.print("Actual: "); Serial.println(actual, 2);
-    error = actual - 50;
+    error = actual - settings.setPoint;
     fuzzy->setInput(1, error);
 
     fuzzy->setInput(2, (error - previousError) / (COMPUTE_FUZZY_EVERY / 1000.0));
@@ -445,19 +459,24 @@ void processFuzzyLogic() {
       bool wasTheRuleFired;
 
       for (int i = 1; i <= 5; i++) {
-        wasTheRuleFired = fuzzy->isFiredRule(i);
-        if (wasTheRuleFired) Serial.println(i);
+      wasTheRuleFired = fuzzy->isFiredRule(i);
+      if (wasTheRuleFired) Serial.println(i);
       }
     */
     float output = fuzzy->defuzzify(1);
 
     //Serial.print("Output: "); Serial.println(output, 2);
-    int tPosition = (int)(stepper.currentPosition() + ((output / 100) * (1120 - 550)));
-    tPosition = min(1120, tPosition);
-    tPosition = max(550, tPosition);
+    int tPosition = (int)(stepper.currentPosition() + ((output / 100) * (settings.maxPosition - settings.minPosition)));
+    tPosition = min(settings.maxPosition, tPosition);
+    tPosition = max(settings.minPosition, tPosition);
     stepper.moveTo(tPosition);
     Serial.print("tPosition: "); Serial.println(tPosition);
 
   }
 
 }
+
+void updateSettings() {
+
+}
+
