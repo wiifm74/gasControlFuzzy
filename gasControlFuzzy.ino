@@ -1,3 +1,5 @@
+#include <EEPROMex.h>						// https://github.com/thijse/Arduino-EEPROMEx
+
 #include <OneWire.h>						// https://github.com/bigjosh/OneWireNoResistor
 #include <DallasTemperature.h>					// https://github.com/milesburton/Arduino-Temperature-Control-Library
 
@@ -21,6 +23,7 @@
 #define ONE_WIRE_PWR 3						// Use GPIO pins for power/ground to simplify the wiring
 #define ONE_WIRE_GND 4						// Use GPIO pins for power/ground to simplify the wiring
 
+
 #define SENSOR_PRECISION 12
 
 #define READ_TEMP_SENSORS_EVERY 1000
@@ -29,7 +32,7 @@
 
 /*-----( Constants )-----*/
 
-const int CONFIG_VERSION = 0.5;
+const int CONFIG_VERSION = 2;
 const int memoryBase = 32;
 
 const int jogSize = 16;
@@ -55,11 +58,6 @@ AccelStepper stepper(forwardstep, backwardstep);		// Wrap the stepper in an Acce
 
 enum operatingState { OFF = 0, IGNITION, MAN, AUTO, SETUP };
 
-struct gasDialSettings {
-  int minPosition;
-  int maxPosition;
-};
-
 struct allSettings {
   int version;
   double minPosition;
@@ -69,10 +67,11 @@ struct allSettings {
 
 /*----( Global Variables )----*/
 
-// Place default values for settings here
-allSettings settings = { CONFIG_VERSION, 550, 1120, 55 };
+// EEPROM
+int configAddress;
 
-double maxPosition = 1120;
+// Settings
+allSettings settings = { CONFIG_VERSION, 550, 1120, 55 };
 
 // Operating State
 operatingState opState = OFF;
@@ -112,12 +111,14 @@ unsigned long nextTemperatureRead = 0;
 unsigned long nextUserInput = 0;
 unsigned long nextFuzzyCompute = 0;
 
+/*----( Functions )----*/
 
 void setup() {
 
   Serial.begin(9600);
   Serial.println("Stubby's Brewduino!");
 
+  initSettings();
   initTempSensor();
   initFuzzyLogic();
   initStepper();
@@ -145,6 +146,33 @@ void loop() {
 
 }
 
+void initSettings() {
+
+  allSettings tempSettings;
+  int timeItTook = 0;
+
+  EEPROM.setMemPool(memoryBase, EEPROMSizeUno);
+  configAddress = EEPROM.getAddress(sizeof(allSettings));
+  timeItTook = EEPROM.readBlock(configAddress, tempSettings);	// Read EEPROM settings to temporary location to compare CONFIG_VERSION
+
+  // Update EEPROM from new settings configuration if necessary
+  if (tempSettings.version != CONFIG_VERSION) {
+
+    timeItTook = EEPROM.writeBlock(configAddress, settings);	// Settings have not been saved before or settings configuration has changed
+    Serial.println("Uploading new settings to EEPROM");
+
+  }
+
+  timeItTook = EEPROM.readBlock(configAddress, settings);	// Read settings from EEPROM
+
+}
+
+void updateSettings() {
+
+  EEPROM.updateBlock(configAddress, settings);
+
+}
+
 void initTempSensor() {
 
   sensors.begin();
@@ -168,6 +196,13 @@ void initTempSensor() {
     Serial.println("Success!");
 
   }
+
+}
+
+void readTempSensor() {
+
+  actual = double(sensors.getTempC(tempSensor));
+  sensors.requestTemperatures(); 				// prime the pump for the next one - but don't wait
 
 }
 
@@ -252,6 +287,30 @@ void initFuzzyLogic() {
 
 }
 
+void processFuzzyLogic() {
+
+  if (opState == AUTO) {
+
+    double previousError = error;
+
+    error = actual - settings.setPoint;
+    fuzzy->setInput(1, error);
+    fuzzy->setInput(2, (error - previousError) / (COMPUTE_FUZZY_EVERY / 1000.0));
+
+    fuzzy->fuzzify();
+
+    float output = fuzzy->defuzzify(1);
+
+    int tPosition = (int)(stepper.currentPosition() + ((output / 100) * (settings.maxPosition - settings.minPosition)));
+    tPosition = min(settings.maxPosition, tPosition);
+    tPosition = max(settings.minPosition, tPosition);
+
+    stepper.moveTo(tPosition);
+
+  }
+
+}
+
 void initStepper() {
 
   AFMS.begin(); // Start the bottom shield
@@ -259,13 +318,6 @@ void initStepper() {
   stepper.setMaxSpeed(200.0);
   stepper.setAcceleration(100.0);
   stepper.setCurrentPosition(0);
-
-}
-
-void readTempSensor() {
-
-  actual = double(sensors.getTempC(tempSensor));
-  sensors.requestTemperatures(); 				// prime the pump for the next one - but don't wait
 
 }
 
@@ -323,159 +375,106 @@ void parseSerialInput() {
   strtokIndx = strtok(NULL, ",");	// this continues where the previous call left off
   doubleFromPC = atof(strtokIndx);
 
-
   if (String(messageFromPC) == "L") {
-    if (opState == MAN) {
-      Serial.print("Moving to "); Serial.println(stepper.currentPosition() + doubleFromPC);
-      stepper.moveTo(stepper.currentPosition() + doubleFromPC);
-    }
+
+    Serial.print("Moving to "); Serial.println(stepper.currentPosition() + doubleFromPC);
+    stepper.moveTo(stepper.currentPosition() + doubleFromPC);
     return;
+
   }
 
   if (String(messageFromPC) == "R") {
+
     Serial.print("Moving to "); Serial.println(stepper.currentPosition() - doubleFromPC);
     stepper.moveTo(stepper.currentPosition() - doubleFromPC);
     return;
+
   }
 
   if (String(messageFromPC) == "DIAL") {
+
     Serial.print("Moving to "); Serial.println(doubleFromPC);
     stepper.moveTo(doubleFromPC);
     return;
+
   }
 
   if (String(messageFromPC) == "SETPOINT") {
+
     Serial.print("Setting target temperature to "); Serial.println(doubleFromPC);
     settings.setPoint = doubleFromPC;
-    //targetChanged = true;
+    updateSettings();
     return;
+
   }
 
   if (String(messageFromPC) == "MAX") {
+
     Serial.print("Setting maximum dial position to "); Serial.println(doubleFromPC);
     settings.maxPosition = doubleFromPC;
     updateSettings();
     return;
+
   }
 
   if (String(messageFromPC) == "MIN") {
+
     Serial.print("Setting minimum dial position to "); Serial.println(doubleFromPC);
     settings.minPosition = doubleFromPC;
     updateSettings();
     return;
+
   }
 
   if (String(messageFromPC) == "MODE") {
 
-    Serial.print("Mode change ");
+    Serial.print("Mode change to "); Serial.println(doubleFromPC);
+    operatingState newOpState = (operatingState)doubleFromPC;
 
-    switch ((int)doubleFromPC) {
-      case 0:
-        Serial.println("OFF");
-        opState = OFF;
-        Serial.print("Moving to "); Serial.println(0);
-        stepper.moveTo(0);
-        break;
+    if (newOpState == opState) {
 
-      case 1:
-        Serial.println("IGNITION");
-        opState = IGNITION;
-        Serial.println("Turning on gas now! IGNITE!");
-        stepper.runToNewPosition(settings.maxPosition);
-        delay(5000);
-        Serial.println("Mode change MANUAL");
-        opState = MAN;
-        Serial.print("Moving to "); Serial.println(settings.minPosition);
-        stepper.moveTo(settings.minPosition);
-        break;
+      //Serial.println("not required");
+      return;
 
-      case 2:
-        Serial.println("MANUAL");
-        opState = MAN;
-        break;
-
-      case 3:
-        Serial.println("AUTO");
-        opState = AUTO;
-        break;
-
-      case 4:
-        Serial.println("SETUP");
-        opState = SETUP;
-        break;
-
-      default:
-        Serial.println("not recognised!");
     }
 
+    if ((newOpState >= 0) && (newOpState <= 4)) {
+
+      opState = newOpState;
+      processModeChange();
+      return;
+
+    }
+
+    //Serial.println ("MODE not recognised.");
     return;
 
-    Serial.println ("Command not recognised.");
-
   }
+
+  Serial.println ("Command not recognised.");
 
 }
 
-void processFuzzyLogic() {
+void processModeChange() {
 
-  if (opState == AUTO) {
-
-    double previousError = error;
-
-    Serial.print("Actual: "); Serial.println(actual, 2);
-    error = actual - settings.setPoint;
-    fuzzy->setInput(1, error);
-
-    fuzzy->setInput(2, (error - previousError) / (COMPUTE_FUZZY_EVERY / 1000.0));
-
-    fuzzy->fuzzify();
-    /*
-      Serial.print("error: ");
-      Serial.print(errorN->getPertinence());
-      Serial.print(", ");
-      Serial.print(errorZero->getPertinence());
-      Serial.print(", ");
-      Serial.println(errorP->getPertinence());
-
-      Serial.print("errorChange: ");
-      Serial.print(errorChangeN->getPertinence());
-      Serial.print(", ");
-      Serial.print(errorChangeZero->getPertinence());
-      Serial.print(", ");
-      Serial.println(errorChangeP->getPertinence());
-
-      Serial.print("gasOutput: ");
-      Serial.print(decrease->getPertinence());
-      Serial.print(", ");
-      Serial.print(decreaseSmall->getPertinence());
-      Serial.print(", ");
-      Serial.print(zeroChange->getPertinence());
-      Serial.print(", ");
-      Serial.print(increaseSmall->getPertinence());
-      Serial.print(", ");
-      Serial.println(increase->getPertinence());
-
-      bool wasTheRuleFired;
-
-      for (int i = 1; i <= 5; i++) {
-      wasTheRuleFired = fuzzy->isFiredRule(i);
-      if (wasTheRuleFired) Serial.println(i);
-      }
-    */
-    float output = fuzzy->defuzzify(1);
-
-    //Serial.print("Output: "); Serial.println(output, 2);
-    int tPosition = (int)(stepper.currentPosition() + ((output / 100) * (settings.maxPosition - settings.minPosition)));
-    tPosition = min(settings.maxPosition, tPosition);
-    tPosition = max(settings.minPosition, tPosition);
-    stepper.moveTo(tPosition);
-    Serial.print("tPosition: "); Serial.println(tPosition);
-
+  switch (opState) {
+  	
+    case OFF:
+      stepper.moveTo(0);
+      break;
+      
+    case IGNITION:
+      Serial.println("IGNITION Turning on gas now! IGNITE!");
+      stepper.runToNewPosition(settings.maxPosition);
+      delay(5000);
+      stepper.moveTo(settings.minPosition);
+      opState = MAN;
+      break;
+      
+    default:
+      break;
+      
   }
-
-}
-
-void updateSettings() {
 
 }
 
