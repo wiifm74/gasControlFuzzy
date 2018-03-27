@@ -62,14 +62,17 @@ struct gasDialSettings {
 
 struct allSettings {
   int version;
-  gasDialSettings gasSettings;
+  double minPosition;
+  double maxPosition;
   double setPoint;
 };
 
-// Place default values for settings here
-allSettings settings = { CONFIG_VERSION, { 550, 1120 }, 55 };
-
 /*----( Global Variables )----*/
+
+// Place default values for settings here
+allSettings settings = { CONFIG_VERSION, 550, 1120, 55 };
+
+double maxPosition = 1120;
 
 // Operating State
 operatingState opState = OFF;
@@ -351,26 +354,23 @@ void parseSerialInput() {
     case 4:		//SETUP
       if (String(messageFromPC) == "MAX") {
         Serial.print("Setting maximum dial position to "); Serial.println(doubleFromPC);
-        //settings.gasSettings.maxPosition = stepper.currentPosition();
+        maxPosition = doubleFromPC;
         //updateSettings();
         return;
       }
 
       if (String(messageFromPC) == "MIN") {
-        Serial.print("Setting minimum dial position to "); Serial.println(doubleFromPC);
-        //settings.gasSettings.minPosition = stepper.currentPosition();
+        Serial.print("Setting minimum dial position to "); Serial.println(stepper.currentPosition());
+        //settings.minPosition = stepper.currentPosition();
         //updateSettings();
         return;
       }
 
     default:
       if (String(messageFromPC) == "MODE") {
-
-        // enum operatingState { OFF = 0, IGNITION, MAN, AUTO, SETUP };
-
+	
+	//updateSettings();
         Serial.print("Mode change ");
-        // strtokIndx = strtok(NULL, ",");	// this continues where the previous call left off
-        //doubleFromPC = atof(strtokIndx);
 
         switch ((int)doubleFromPC) {
           case 0:
@@ -384,12 +384,12 @@ void parseSerialInput() {
             Serial.println("IGNITION");
             opState = IGNITION;
             Serial.println("Turning on gas now! IGNITE!");
-            stepper.runToNewPosition(1120);
+            stepper.runToNewPosition(settings.maxPosition);
             delay(5000);
             Serial.println("Mode change MANUAL");
             opState = MAN;
-            Serial.print("Moving to "); Serial.println(550);
-            stepper.moveTo(550);
+            Serial.print("Moving to "); Serial.println(settings.minPosition);
+            stepper.moveTo(settings.minPosition);
             break;
 
           case 2:
@@ -425,9 +425,8 @@ void processFuzzyLogic() {
 
     double previousError = error;
 
-    //actual = actual + random(-1, 1);
     Serial.print("Actual: "); Serial.println(actual, 2);
-    error = actual - 50;
+    error = actual - settings.setPoint;
     fuzzy->setInput(1, error);
 
     fuzzy->setInput(2, (error - previousError) / (COMPUTE_FUZZY_EVERY / 1000.0));
@@ -469,8 +468,8 @@ void processFuzzyLogic() {
     float output = fuzzy->defuzzify(1);
 
     //Serial.print("Output: "); Serial.println(output, 2);
-    int tPosition = (int)(stepper.currentPosition() + ((output / 100) * (1120 - 550)));
-    tPosition = min(1120, tPosition);
+    int tPosition = (int)(stepper.currentPosition() + ((output / 100) * (settings.maxPosition - settings.minPosition)));
+    tPosition = min(settings.maxPosition, tPosition);
     tPosition = max(550, tPosition);
     stepper.moveTo(tPosition);
     Serial.print("tPosition: "); Serial.println(tPosition);
@@ -479,4 +478,9 @@ void processFuzzyLogic() {
 
 }
 
+void updateSettings() {
+	
+	settings.maxPosition = maxPosition;
+	
+}
 
