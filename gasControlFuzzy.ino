@@ -229,7 +229,7 @@ void initTempSensor() {
 
   sensors.begin();
 
-  Serial.print("Locating temperature sensor...");
+  Serial.print("Locating temperature sensor... ");
   Serial.print("Found ");
   Serial.print(sensors.getDeviceCount(), DEC);			// locate devices on the bus
   Serial.println(" devices.");
@@ -384,19 +384,41 @@ void updateDisplay() {
 
   if (selectedStateChanged) {
 
-    lcd.setCursor(0, 0);
-    lcd.print((opState == OFF ? " " : "<"));
+    String topLine = "";
+    
+    topLine.concat((opState == OFF ? " " : "<"));
     strcpy_P(messageToPC, (char*)pgm_read_word(&(opStateTable[opState])));
-    //lcd.print((int)floor((double)(14-strlen(messageToPC))/2));
+    
     for (int i = 0; i < (int)floor((double)(14 - strlen(messageToPC)) / 2); i++) {
-      lcd.print(" ");
+    	
+      topLine.concat(" ");
     }
-    lcd.print(messageToPC);
+    
+    topLine.concat(messageToPC);
+    
     for (int i = 0; i < (int)ceil((double)(14 - strlen(messageToPC)) / 2); i++) {
-      lcd.print(" ");
-    }
-    lcd.print((opState == SETUP ? " " : ">"));
 
+      topLine.concat(" ");
+      
+    }
+    
+    topLine.concat((opState == SETUP ? " " : ">"));
+    lcd.setCursor(0, 0);
+    lcd.print(topLine);
+
+    /*
+        lcd.setCursor(0, 0);
+        lcd.print((opState == OFF ? " " : "<"));
+        strcpy_P(messageToPC, (char*)pgm_read_word(&(opStateTable[opState])));
+        for (int i = 0; i < (int)floor((double)(14 - strlen(messageToPC)) / 2); i++) {
+          lcd.print(" ");
+        }
+        lcd.print(messageToPC);
+        for (int i = 0; i < (int)ceil((double)(14 - strlen(messageToPC)) / 2); i++) {
+          lcd.print(" ");
+        }
+        lcd.print((opState == SETUP ? " " : ">"));
+    */
   }
 
   switch (opState) {
@@ -430,10 +452,10 @@ void updateDisplay() {
         lcd.setCursor(0, 1);
         lcd.print("T/A=");
 
-        lcd.setCursor(7, 1);
+        lcd.setCursor(8, 1);
         lcd.print("/");
 
-        lcd.setCursor(13, 1);
+        lcd.setCursor(14, 1);
         lcd.write(1);
         lcd.print("c");
 
@@ -452,7 +474,7 @@ void updateDisplay() {
 
       if (actualChanged) {
 
-        lcd.setCursor(8, 1);
+        lcd.setCursor(9, 1);
         dtostrf(actual, 5, DISPLAY_ACTUAL_DECIMALS, lcd_buffer);
         lcd.print(lcd_buffer);
 
