@@ -1,6 +1,10 @@
 #include <EEPROMex.h>						// https://github.com/thijse/Arduino-EEPROMEx
 #include <avr/pgmspace.h>
 
+#include <Wire.h>
+#include <Adafruit_RGBLCDShield.h>				// https://github.com/adafruit/Adafruit-RGB-LCD-Shield-Library
+#include <utility/Adafruit_MCP23017.h>
+
 #include <OneWire.h>						// https://github.com/bigjosh/OneWireNoResistor
 #include <DallasTemperature.h>					// https://github.com/milesburton/Arduino-Temperature-Control-Library
 
@@ -24,12 +28,25 @@
 #define ONE_WIRE_PWR 3						// Use GPIO pins for power/ground to simplify the wiring
 #define ONE_WIRE_GND 4						// Use GPIO pins for power/ground to simplify the wiring
 
+#define LCD_BUFFER_SIZE 4
+#define DISPLAY_TARGET_DECIMALS 0
+#define DISPLAY_ACTUAL_DECIMALS 1
+
+//#define OFF 0x0						// These #defines make it easy to set the backlight color
+#define RED 0x1
+#define GREEN 0x2
+#define YELLOW 0x3
+#define BLUE 0x4
+#define VIOLET 0x5
+#define TEAL 0x6
+#define WHITE 0x7
 
 #define SENSOR_PRECISION 12
 
 #define READ_TEMP_SENSORS_EVERY 1000
 #define READ_USER_INPUT_EVERY 20
 #define COMPUTE_FUZZY_EVERY 2000
+#define WRITE_DISPLAY_EVERY 50
 
 /*-----( Constants )-----*/
 
@@ -50,6 +67,8 @@ const int jogSize = 16;
 OneWire oneWire(ONE_WIRE_BUS);					// Create a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
 DallasTemperature sensors(&oneWire);				// Pass our oneWire reference to Dallas Temperature.
 DeviceAddress tempSensor;					// Arrays to hold device address
+
+Adafruit_RGBLCDShield lcd = Adafruit_RGBLCDShield();		// Create a RGB LCD instance
 
 Adafruit_MotorShield AFMS = Adafruit_MotorShield();		// Create a motor shield object with the default I2C address
 Adafruit_StepperMotor *myStepper = AFMS.getStepper(200, 2);	// Connect a stepper motor with 200 steps per revolution (1.8 degree) to motor port #2 (M3 and M4)
@@ -83,17 +102,35 @@ allSettings settings = { CONFIG_VERSION, 550, 1120, 55 };
 
 // Operating State
 operatingState opState = OFF;
+boolean opStateChanged = true;
+boolean selectedStateChanged = true;
 
-// Serial input
+// Serial
 const byte numChars = 32;
 char receivedChars[numChars];
 char tempChars[numChars];// temporary array for use when parsing
-
-// variables to hold the parsed data
 char messageFromPC[numChars] = {0};
 char messageToPC[numChars] = {0};
 double doubleFromPC = 0.0;
 boolean newData = false;
+
+// LCD
+char lcd_buffer[LCD_BUFFER_SIZE];             			// LCD buffer used for the better string format to LCD
+bool targetChanged = true;
+bool actualChanged = true;
+uint8_t lastBacklight = OFF;
+
+byte degree[8] = 						// define the degree symbol
+{
+  B00110,
+  B01001,
+  B01001,
+  B00110,
+  B00000,
+  B00000,
+  B00000,
+  B00000
+};
 
 // Logic
 double actual = 50;
@@ -120,6 +157,7 @@ FuzzySet* increase = new FuzzySet(40, 50, 50, 60); // increase gas
 unsigned long nextTemperatureRead = 0;
 unsigned long nextUserInput = 0;
 unsigned long nextFuzzyCompute = 0;
+unsigned long nextDisplayWrite = 0;
 
 /*----( Functions )----*/
 
@@ -131,6 +169,7 @@ void setup() {
 
   initSettings();
   initTempSensor();
+  initDisplay();
   initFuzzyLogic();
   initStepper();
 
@@ -141,10 +180,10 @@ void doFunctionAtInterval(void (*callBackFunction)(), unsigned long *nextEvent, 
   unsigned long now = millis();
 
   if (now  >= *nextEvent) {
-  	
+
     *nextEvent = now + interval;
     callBackFunction();
-    
+
   }
 
 }
@@ -154,6 +193,7 @@ void loop() {
   doFunctionAtInterval(readUserInput, &nextUserInput, READ_USER_INPUT_EVERY);
   doFunctionAtInterval(readTempSensor, &nextTemperatureRead, READ_TEMP_SENSORS_EVERY);
   doFunctionAtInterval(processFuzzyLogic, &nextFuzzyCompute, COMPUTE_FUZZY_EVERY);
+  doFunctionAtInterval(updateDisplay, &nextDisplayWrite, WRITE_DISPLAY_EVERY);
   stepper.run();
 
 }
@@ -323,6 +363,112 @@ void processFuzzyLogic() {
 
 }
 
+void initDisplay() {
+
+  lcd.begin(16, 2);
+  lcd.clear();
+
+  lcd.createChar(1, degree); 					// create degree symbol from the binary
+
+  lcd.setBacklight(WHITE);
+
+  lcd.print(F(" Stubbydrainer's"));
+  lcd.setCursor(0, 1);
+  lcd.print(F("   Brewduino!"));
+
+  nextDisplayWrite = millis() + 3000;				// Splash screen delay
+
+}
+
+void updateDisplay() {
+
+  if (selectedStateChanged) {
+
+    lcd.setCursor(0, 0);
+    lcd.print((opState == OFF ? " " : "<"));
+    strcpy_P(messageToPC, (char*)pgm_read_word(&(opStateTable[opState])));
+    //lcd.print((int)floor((double)(14-strlen(messageToPC))/2));
+    for (int i = 0; i < (int)floor((double)(14 - strlen(messageToPC)) / 2); i++) {
+      lcd.print(" ");
+    }
+    lcd.print(messageToPC);
+    for (int i = 0; i < (int)ceil((double)(14 - strlen(messageToPC)) / 2); i++) {
+      lcd.print(" ");
+    }
+    lcd.print((opState == SETUP ? " " : ">"));
+
+  }
+
+  switch (opState) {
+
+    case OFF:
+
+      if (actualChanged) {
+
+        lcd.setCursor(0, 1);
+        lcd.print("   A=");
+        dtostrf(actual, 5, DISPLAY_ACTUAL_DECIMALS, lcd_buffer);
+        lcd.print(lcd_buffer);
+        lcd.write(1);
+        lcd.print("c    ");
+
+      }
+
+      break;
+
+    case SETUP:
+
+      lcd.setCursor(0, 1);
+      lcd.print("                ");
+
+      break;
+
+    default:
+
+      if (opStateChanged) {
+
+        lcd.setCursor(0, 1);
+        lcd.print("T/A=");
+
+        lcd.setCursor(7, 1);
+        lcd.print("/");
+
+        lcd.setCursor(13, 1);
+        lcd.write(1);
+        lcd.print("c");
+
+        targetChanged = true;
+        actualChanged = true;
+
+      }
+
+      if (targetChanged) {
+
+        lcd.setCursor(4, 1);
+        dtostrf(settings.setPoint, 3, DISPLAY_TARGET_DECIMALS, lcd_buffer);
+        lcd.print(lcd_buffer);
+
+      }
+
+      if (actualChanged) {
+
+        lcd.setCursor(8, 1);
+        dtostrf(actual, 5, DISPLAY_ACTUAL_DECIMALS, lcd_buffer);
+        lcd.print(lcd_buffer);
+
+      }
+
+      break;
+
+  }
+
+  opStateChanged = false;
+  selectedStateChanged = false;
+  targetChanged = false;
+  actualChanged = false;
+
+}
+
 void initStepper() {
 
   AFMS.begin(); // Start the bottom shield
@@ -334,9 +480,9 @@ void initStepper() {
 }
 
 void readUserInput() {
-	
+
   readSerialInput();
-  
+
 }
 
 void readSerialInput() {
@@ -348,47 +494,47 @@ void readSerialInput() {
   char rc;
 
   while (Serial.available() > 0 && newData == false) {
-  	
+
     rc = Serial.read();
 
     if (recvInProgress == true) {
-    	
+
       if (rc != endMarker) {
-      	
+
         receivedChars[ndx] = rc;
         ndx++;
-        
+
         if (ndx >= numChars) {
-        	
+
           ndx = numChars - 1;
-          
+
         }
       }
       else {
-      	
+
         receivedChars[ndx] = '\0';// terminate the string
         recvInProgress = false;
         ndx = 0;
         newData = true;
-        
+
       }
     }
     else if (rc == startMarker) {
-    	
+
       recvInProgress = true;
-      
+
     }
-    
+
   }
 
   if (newData == true) {
-  	
+
     strcpy(tempChars, receivedChars);
     // this temporary copy is necessary to protect the original data
     //   because strtok() used in parseData() replaces the commas with \0
     parseSerialInput();
     newData = false;
-    
+
   }
 
 }
@@ -403,7 +549,7 @@ void parseSerialInput() {
   doubleFromPC = atof(strtokIndx);
 
   Serial.print(messageFromPC); Serial.print(": ");
-  
+
   if (String(messageFromPC) == "L") {
 
     Serial.println(stepper.currentPosition() + doubleFromPC);
@@ -483,6 +629,10 @@ void parseSerialInput() {
 }
 
 void processModeChange() {
+
+  opStateChanged = true;
+  selectedStateChanged = true;
+  actualChanged = true;
 
   switch (opState) {
 
