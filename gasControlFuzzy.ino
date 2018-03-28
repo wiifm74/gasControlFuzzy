@@ -1,4 +1,5 @@
 #include <EEPROMex.h>						// https://github.com/thijse/Arduino-EEPROMEx
+#include <avr/pgmspace.h>
 
 #include <OneWire.h>						// https://github.com/bigjosh/OneWireNoResistor
 #include <DallasTemperature.h>					// https://github.com/milesburton/Arduino-Temperature-Control-Library
@@ -34,6 +35,13 @@
 
 const int CONFIG_VERSION = 2;
 const int memoryBase = 32;
+
+const char opState0[] PROGMEM = "OFF";
+const char opState1[] PROGMEM = "IGNITION";
+const char opState2[] PROGMEM = "MANUAL";
+const char opState3[] PROGMEM = "AUTOMATIC";
+const char opState4[] PROGMEM = "SETUP";
+const char* const opStateTable[] PROGMEM = {opState0, opState1, opState2, opState3, opState4};
 
 const int jogSize = 16;
 
@@ -80,8 +88,10 @@ operatingState opState = OFF;
 const byte numChars = 32;
 char receivedChars[numChars];
 char tempChars[numChars];// temporary array for use when parsing
+
 // variables to hold the parsed data
 char messageFromPC[numChars] = {0};
+char messageToPC[numChars] = {0};
 double doubleFromPC = 0.0;
 boolean newData = false;
 
@@ -116,6 +126,7 @@ unsigned long nextFuzzyCompute = 0;
 void setup() {
 
   Serial.begin(9600);
+  while (!Serial); // wait for serial port to connect. Needed for native USB
   Serial.println("Stubby's Brewduino!");
 
   initSettings();
@@ -129,10 +140,11 @@ void doFunctionAtInterval(void (*callBackFunction)(), unsigned long *nextEvent, 
 
   unsigned long now = millis();
 
-  if (now  >= *nextEvent)
-  {
+  if (now  >= *nextEvent) {
+  	
     *nextEvent = now + interval;
     callBackFunction();
+    
   }
 
 }
@@ -322,7 +334,9 @@ void initStepper() {
 }
 
 void readUserInput() {
+	
   readSerialInput();
+  
 }
 
 void readSerialInput() {
@@ -334,34 +348,47 @@ void readSerialInput() {
   char rc;
 
   while (Serial.available() > 0 && newData == false) {
+  	
     rc = Serial.read();
 
     if (recvInProgress == true) {
+    	
       if (rc != endMarker) {
+      	
         receivedChars[ndx] = rc;
         ndx++;
+        
         if (ndx >= numChars) {
+        	
           ndx = numChars - 1;
+          
         }
       }
       else {
+      	
         receivedChars[ndx] = '\0';// terminate the string
         recvInProgress = false;
         ndx = 0;
         newData = true;
+        
       }
     }
     else if (rc == startMarker) {
+    	
       recvInProgress = true;
+      
     }
+    
   }
 
   if (newData == true) {
+  	
     strcpy(tempChars, receivedChars);
     // this temporary copy is necessary to protect the original data
     //   because strtok() used in parseData() replaces the commas with \0
     parseSerialInput();
     newData = false;
+    
   }
 
 }
@@ -375,9 +402,11 @@ void parseSerialInput() {
   strtokIndx = strtok(NULL, ",");	// this continues where the previous call left off
   doubleFromPC = atof(strtokIndx);
 
+  Serial.print(messageFromPC); Serial.print(": ");
+  
   if (String(messageFromPC) == "L") {
 
-    Serial.print("Moving to "); Serial.println(stepper.currentPosition() + doubleFromPC);
+    Serial.println(stepper.currentPosition() + doubleFromPC);
     stepper.moveTo(stepper.currentPosition() + doubleFromPC);
     return;
 
@@ -385,7 +414,7 @@ void parseSerialInput() {
 
   if (String(messageFromPC) == "R") {
 
-    Serial.print("Moving to "); Serial.println(stepper.currentPosition() - doubleFromPC);
+    Serial.println(stepper.currentPosition() - doubleFromPC);
     stepper.moveTo(stepper.currentPosition() - doubleFromPC);
     return;
 
@@ -393,7 +422,7 @@ void parseSerialInput() {
 
   if (String(messageFromPC) == "DIAL") {
 
-    Serial.print("Moving to "); Serial.println(doubleFromPC);
+    Serial.println(doubleFromPC);
     stepper.moveTo(doubleFromPC);
     return;
 
@@ -401,7 +430,7 @@ void parseSerialInput() {
 
   if (String(messageFromPC) == "SETPOINT") {
 
-    Serial.print("Setting target temperature to "); Serial.println(doubleFromPC);
+    Serial.println(doubleFromPC);
     settings.setPoint = doubleFromPC;
     updateSettings();
     return;
@@ -410,7 +439,7 @@ void parseSerialInput() {
 
   if (String(messageFromPC) == "MAX") {
 
-    Serial.print("Setting maximum dial position to "); Serial.println(doubleFromPC);
+    Serial.println(doubleFromPC);
     settings.maxPosition = doubleFromPC;
     updateSettings();
     return;
@@ -419,7 +448,7 @@ void parseSerialInput() {
 
   if (String(messageFromPC) == "MIN") {
 
-    Serial.print("Setting minimum dial position to "); Serial.println(doubleFromPC);
+    Serial.println(doubleFromPC);
     settings.minPosition = doubleFromPC;
     updateSettings();
     return;
@@ -428,52 +457,53 @@ void parseSerialInput() {
 
   if (String(messageFromPC) == "MODE") {
 
-    Serial.print("Mode change to "); Serial.println(doubleFromPC);
     operatingState newOpState = (operatingState)doubleFromPC;
 
     if (newOpState == opState) {
 
-      //Serial.println("not required");
+      Serial.println("not required");
       return;
 
     }
 
-    if ((newOpState >= 0) && (newOpState <= 4)) {
+    if ((newOpState >= OFF) && (newOpState <= SETUP)) {
 
+      strcpy_P(messageToPC, (char*)pgm_read_word(&(opStateTable[newOpState])));
+      Serial.println(messageToPC);
       opState = newOpState;
       processModeChange();
       return;
 
     }
 
-    //Serial.println ("MODE not recognised.");
-    return;
-
   }
 
-  Serial.println ("Command not recognised.");
+  Serial.println ("not recognised.");
 
 }
 
 void processModeChange() {
 
   switch (opState) {
-  	
+
     case OFF:
+
       stepper.moveTo(0);
       break;
-      
+
     case IGNITION:
+
       Serial.println("IGNITION Turning on gas now! IGNITE!");
       stepper.runToNewPosition(settings.maxPosition);
       delay(5000);
       stepper.moveTo(settings.minPosition);
       opState = MAN;
       break;
-      
+
     default:
+
       break;
-      
+
   }
 
 }
