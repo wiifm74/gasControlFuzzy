@@ -253,7 +253,15 @@ void initTempSensor() {
 
 void readTempSensor() {
 
+  double previous = actual;
   actual = double(sensors.getTempC(tempSensor));
+  
+  if (previous != actual) {
+  	
+    actualChanged = true;
+    
+  }
+  
   sensors.requestTemperatures(); 				// prime the pump for the next one - but don't wait
 
 }
@@ -385,23 +393,23 @@ void updateDisplay() {
   if (selectedStateChanged) {
 
     String topLine = "";
-    
+
     topLine.concat((opState == OFF ? " " : "<"));
     strcpy_P(messageToPC, (char*)pgm_read_word(&(opStateTable[opState])));
-    
+
     for (int i = 0; i < (int)floor((double)(14 - strlen(messageToPC)) / 2); i++) {
-    	
+
       topLine.concat(" ");
     }
-    
+
     topLine.concat(messageToPC);
-    
+
     for (int i = 0; i < (int)ceil((double)(14 - strlen(messageToPC)) / 2); i++) {
 
       topLine.concat(" ");
-      
+
     }
-    
+
     topLine.concat((opState == SETUP ? " " : ">"));
     lcd.setCursor(0, 0);
     lcd.print(topLine);
