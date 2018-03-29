@@ -50,7 +50,7 @@
 
 /*-----( Constants )-----*/
 
-const int CONFIG_VERSION = 2;
+const int CONFIG_VERSION = 1;
 const int memoryBase = 32;
 
 const char opState0[] PROGMEM = "OFF";
@@ -85,8 +85,14 @@ AccelStepper stepper(forwardstep, backwardstep);		// Wrap the stepper in an Acce
 
 enum operatingState { OFF = 0, IGNITION, MAN, AUTO, SETUP };
 
+struct sensorCalibration {
+  double rawLow;
+  double rawHigh;
+};
+
 struct allSettings {
   int version;
+  sensorCalibration tempCal;
   double minPosition;
   double maxPosition;
   double setPoint;
@@ -98,7 +104,7 @@ struct allSettings {
 int configAddress;
 
 // Settings
-allSettings settings = { CONFIG_VERSION, 550, 1120, 55 };
+allSettings settings = { CONFIG_VERSION, { 0.6, 99.1 }, 550, 1120, 55 };
 
 // Operating State
 operatingState opState = OFF;
@@ -252,9 +258,9 @@ void initTempSensor() {
 }
 
 void readTempSensor() {
-
+	
   double previous = actual;
-  actual = double(sensors.getTempC(tempSensor));
+  actual = (((double(sensors.getTempC(tempSensor)) - settings.tempCal.rawLow) * (100 - 0)) / (settings.tempCal.rawHigh - settings.tempCal.rawLow)) + 0;
   
   if (previous != actual) {
   	
