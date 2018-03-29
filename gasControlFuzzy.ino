@@ -50,7 +50,7 @@
 
 /*-----( Constants )-----*/
 
-const int CONFIG_VERSION = 2;
+const int CONFIG_VERSION = 1;
 const int memoryBase = 32;
 
 const char opState0[] PROGMEM = "OFF";
@@ -85,8 +85,14 @@ AccelStepper stepper(forwardstep, backwardstep);		// Wrap the stepper in an Acce
 
 enum operatingState { OFF = 0, IGNITION, MAN, AUTO, SETUP };
 
+struct sensorCalibration {
+  double rawLow;
+  double rawHigh;
+};
+
 struct allSettings {
   int version;
+  sensorCalibration tempCal;
   double minPosition;
   double maxPosition;
   double setPoint;
@@ -98,7 +104,7 @@ struct allSettings {
 int configAddress;
 
 // Settings
-allSettings settings = { CONFIG_VERSION, 550, 1120, 55 };
+allSettings settings = { CONFIG_VERSION, { 0.6, 99.1 }, 550, 1120, 55 };
 
 // Operating State
 operatingState opState = OFF;
@@ -252,8 +258,16 @@ void initTempSensor() {
 }
 
 void readTempSensor() {
-
-  actual = double(sensors.getTempC(tempSensor));
+	
+  double previous = actual;
+  actual = (((double(sensors.getTempC(tempSensor)) - settings.tempCal.rawLow) * (100 - 0)) / (settings.tempCal.rawHigh - settings.tempCal.rawLow)) + 0;
+  
+  if (previous != actual) {
+  	
+    actualChanged = true;
+    
+  }
+  
   sensors.requestTemperatures(); 				// prime the pump for the next one - but don't wait
 
 }
@@ -385,23 +399,23 @@ void updateDisplay() {
   if (selectedStateChanged) {
 
     String topLine = "";
-    
+
     topLine.concat((opState == OFF ? " " : "<"));
     strcpy_P(messageToPC, (char*)pgm_read_word(&(opStateTable[opState])));
-    
+
     for (int i = 0; i < (int)floor((double)(14 - strlen(messageToPC)) / 2); i++) {
-    	
+
       topLine.concat(" ");
     }
-    
+
     topLine.concat(messageToPC);
-    
+
     for (int i = 0; i < (int)ceil((double)(14 - strlen(messageToPC)) / 2); i++) {
 
       topLine.concat(" ");
-      
+
     }
-    
+
     topLine.concat((opState == SETUP ? " " : ">"));
     lcd.setCursor(0, 0);
     lcd.print(topLine);
