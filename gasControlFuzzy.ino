@@ -1,4 +1,4 @@
-const int CONFIG_VERSION = 0;
+const int CONFIG_VERSION = 1;
 
 #define FEATURE_ENABLED_MYSETTINGS
 
