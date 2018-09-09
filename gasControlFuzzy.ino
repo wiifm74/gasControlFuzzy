@@ -1,14 +1,18 @@
-#include <EEPROMex.h>						// https://github.com/thijse/Arduino-EEPROMEx
+const int CONFIG_VERSION = 1;
+
+#define FEATURE_ENABLED_MYSETTINGS
+
+#include <EEPROMex.h>                               // https://github.com/thijse/Arduino-EEPROMEx
 #include <avr/pgmspace.h>
 
 #include <Wire.h>
-#include <Adafruit_RGBLCDShield.h>				// https://github.com/adafruit/Adafruit-RGB-LCD-Shield-Library
+#include <Adafruit_RGBLCDShield.h>                  // https://github.com/adafruit/Adafruit-RGB-LCD-Shield-Library
 #include <utility/Adafruit_MCP23017.h>
 
-#include <OneWire.h>						// https://github.com/bigjosh/OneWireNoResistor
-#include <DallasTemperature.h>					// https://github.com/milesburton/Arduino-Temperature-Control-Library
+#include <OneWire.h>                                // https://github.com/bigjosh/OneWireNoResistor
+#include <DallasTemperature.h>                      // https://github.com/milesburton/Arduino-Temperature-Control-Library
 
-#include <FuzzyRule.h>						// https://github.com/zerokol/eFLL
+#include <FuzzyRule.h>                              // https://github.com/zerokol/eFLL
 #include <FuzzyComposition.h>
 #include <Fuzzy.h>
 #include <FuzzyRuleConsequent.h>
@@ -18,78 +22,80 @@
 #include <FuzzySet.h>
 #include <FuzzyRuleAntecedent.h>
 
-#include <AccelStepper.h>					// https://github.com/adafruit/AccelStepper
-#include <Adafruit_MotorShield.h>				// https://github.com/adafruit/Adafruit_Motor_Shield_V2_Library
+#include <AccelStepper.h>                           // https://github.com/adafruit/AccelStepper
+#include <Adafruit_MotorShield.h>                   // https://github.com/adafruit/Adafruit_Motor_Shield_V2_Library
 #include "utility/Adafruit_MS_PWMServoDriver.h"
 
 /*-----( Definitions )-----*/
 
-#define ONE_WIRE_BUS 2						// Data wire is plugged into port 2 on the Arduino
-#define ONE_WIRE_PWR 3						// Use GPIO pins for power/ground to simplify the wiring
-#define ONE_WIRE_GND 4						// Use GPIO pins for power/ground to simplify the wiring
-
-#define LCD_BUFFER_SIZE 4
-#define DISPLAY_TARGET_DECIMALS 0
-#define DISPLAY_ACTUAL_DECIMALS 1
-
-//#define OFF 0x0						// These #defines make it easy to set the backlight color
-#define RED 0x1
-#define GREEN 0x2
-#define YELLOW 0x3
-#define BLUE 0x4
-#define VIOLET 0x5
-#define TEAL 0x6
-#define WHITE 0x7
-
-#define SENSOR_PRECISION 12
-
-#define READ_TEMP_SENSORS_EVERY 1000
-#define READ_USER_INPUT_EVERY 20
-#define COMPUTE_FUZZY_EVERY 2000
-#define WRITE_DISPLAY_EVERY 50
+#include "Definitions.h"
 
 /*-----( Constants )-----*/
 
-const int CONFIG_VERSION = 2;
 const int memoryBase = 32;
 
 const char opState0[] PROGMEM = "OFF";
 const char opState1[] PROGMEM = "IGNITION";
-const char opState2[] PROGMEM = "MANUAL";
-const char opState3[] PROGMEM = "AUTOMATIC";
-const char opState4[] PROGMEM = "SETUP";
+const char opState2[] PROGMEM = "AUTOMATIC";
+const char opState3[] PROGMEM = "MANUAL";
+const char opState4[] PROGMEM = "PUMP";
 const char* const opStateTable[] PROGMEM = {opState0, opState1, opState2, opState3, opState4};
 
-const int jogSize = 16;
+const int jogSize = 32;
 
 /*----( Objects )----*/
 
-OneWire oneWire(ONE_WIRE_BUS);					// Create a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
-DallasTemperature sensors(&oneWire);				// Pass our oneWire reference to Dallas Temperature.
-DeviceAddress tempSensor;					// Arrays to hold device address
+OneWire oneWire( ONE_WIRE_BUS );                                // Create a oneWire instance to communicate with any OneWire devices ( not just Maxim/Dallas temperature ICs )
+DallasTemperature sensors( &oneWire );                          // Pass our oneWire reference to Dallas Temperature.
+DeviceAddress tempSensor;                                       // Arrays to hold device address
 
-Adafruit_RGBLCDShield lcd = Adafruit_RGBLCDShield();		// Create a RGB LCD instance
+Adafruit_RGBLCDShield lcd = Adafruit_RGBLCDShield();            // Create a RGB LCD instance
 
-Adafruit_MotorShield AFMS = Adafruit_MotorShield();		// Create a motor shield object with the default I2C address
-Adafruit_StepperMotor *myStepper = AFMS.getStepper(200, 2);	// Connect a stepper motor with 200 steps per revolution (1.8 degree) to motor port #2 (M3 and M4)
+Adafruit_MotorShield AFMS = Adafruit_MotorShield();             // Create a motor shield object with the default I2C address
+Adafruit_StepperMotor *myStepper = AFMS.getStepper( 200, 2 );   // Connect a stepper motor with 200 steps per revolution ( 1.8 degree ) to motor port #2 ( M3 and M4 )
 
 void forwardstep() {
-  myStepper->onestep(FORWARD, MICROSTEP);			// Anti-clockwise
+  myStepper->onestep( FORWARD, MICROSTEP );           // Anti-clockwise
 }
 
 void backwardstep() {
-  myStepper->onestep(BACKWARD, MICROSTEP);			// Clockwise
+  myStepper->onestep( BACKWARD, MICROSTEP );           // Clockwise
 }
 
-AccelStepper stepper(forwardstep, backwardstep);		// Wrap the stepper in an AccelStepper object
+AccelStepper stepper( forwardstep, backwardstep );     // Wrap the stepper in an AccelStepper object
 
-enum operatingState { OFF = 0, IGNITION, MAN, AUTO, SETUP };
+enum operatingState { OFF = 0, IGNITION, AUTO, MAN, PUMP };
+enum pumpStates { NORECIRC = 0, RECIRC };
+enum autoDisplay { RECIPETITLE = 0, STEPTITLE, TA, TIMEREMAINING };
+
+struct sensorCalibration {
+  double rawLow;
+  double rawHigh;
+};
+
+struct recipeStep {
+  bool active;
+  char title[16];
+  char startMessage[16];
+  char endMessage[16];
+  double temperature;
+  int stepTime;
+};
+
+struct recipe {
+  char title[16];
+  recipeStep steps[6];
+  int hopsAddition[3];
+};
 
 struct allSettings {
   int version;
+  sensorCalibration tempCal;
   double minPosition;
   double maxPosition;
-  double setPoint;
+  int currentRecipe;
+  int currentStep;
+  int currentHopsAddition;
 };
 
 /*----( Global Variables )----*/
@@ -97,30 +103,49 @@ struct allSettings {
 // EEPROM
 int configAddress;
 
+//#include "Recipes.h"
+#include "SousVide.h"
+//#include "TestingRecipes.h"
+
 // Settings
-allSettings settings = { CONFIG_VERSION, 550, 1120, 55 };
+#ifdef FEATURE_ENABLED_MYSETTINGS
+#include "mySettings.h"
+#else
+allSettings settings = { CONFIG_VERSION, { 0.0, 100.0 }, 0, 0, -1, 0, 0 };
+#endif
+
 
 // Operating State
 operatingState opState = OFF;
 boolean opStateChanged = true;
+bool ignitionHasOccured = false;
+bool userResponseWaterFilled = false;
+
+// Pump
+pumpStates pumpState = NORECIRC;
+boolean pumpStateChanged = true;
+
+// User Input
+uint8_t lastButtonPressed = 0;
+operatingState selectedState = OFF;
 boolean selectedStateChanged = true;
 
-// Serial
-const byte numChars = 32;
-char receivedChars[numChars];
-char tempChars[numChars];// temporary array for use when parsing
-char messageFromPC[numChars] = {0};
-char messageToPC[numChars] = {0};
+// Communications
+char receivedChars[BUFFER_SIZE];
+char tempChars[BUFFER_SIZE];// temporary array for use when parsing
+char bufferChars[BUFFER_SIZE] = {0};
+char messageToPC[BUFFER_SIZE] = {0};
 double doubleFromPC = 0.0;
 boolean newData = false;
 
 // LCD
-char lcd_buffer[LCD_BUFFER_SIZE];             			// LCD buffer used for the better string format to LCD
 bool targetChanged = true;
 bool actualChanged = true;
+bool autoDisplayChanged = true;
+autoDisplay autoDisplayState = TA;
 uint8_t lastBacklight = OFF;
 
-byte degree[8] = 						// define the degree symbol
+byte degree[] =            // define the degree symbol
 {
   B00110,
   B01001,
@@ -133,558 +158,717 @@ byte degree[8] = 						// define the degree symbol
 };
 
 // Logic
-double actual = 50;
-double error = -100;
+double actual = 0;
+double error = 0;
+
+// Auto mode
+unsigned long stepTargetReached = 0;
 
 // Processing
 Fuzzy* fuzzy = new Fuzzy();
-
-FuzzySet* errorN = new FuzzySet(-100, -100, -10, -5); // Negative Error
-FuzzySet* errorZero = new FuzzySet(-15, -10, 0, 10); // Zero Error
-FuzzySet* errorP = new FuzzySet(5, 10, 100, 100); // Positive Error
-
-FuzzySet* errorChangeN = new FuzzySet(-5, -5, -0.1, -0.05); // Negative ErrorChange
-FuzzySet* errorChangeZero = new FuzzySet(-0.1, 0, 0, 0.1); // Zero ErrorChange
-FuzzySet* errorChangeP = new FuzzySet(0.05, 0.1, 5, 5); // Positive ErrorChange
-
-FuzzySet* decrease = new FuzzySet(-70, -60, -60, -50); // decrease gas
-FuzzySet* decreaseSmall = new FuzzySet(-45, -35, -35, -25); // small decrease gas
-FuzzySet* zeroChange = new FuzzySet(-20, 0, 0, 10); // zero change
-FuzzySet* increaseSmall = new FuzzySet(15, 25, 25, 35); // small increase gas
-FuzzySet* increase = new FuzzySet(40, 50, 50, 60); // increase gas
+#include "FuzzySets.h"
 
 // Loop Timing
 unsigned long nextTemperatureRead = 0;
 unsigned long nextUserInput = 0;
-unsigned long nextFuzzyCompute = 0;
+unsigned long nextAutoCompute = 0;
 unsigned long nextDisplayWrite = 0;
+unsigned long nextBlinkLCD = 0;
+unsigned long nextAutoDisplayChange = 0;
+unsigned long nextPumpUpdate = 0;
 
 /*----( Functions )----*/
 
 void setup() {
-
-  Serial.begin(9600);
-  while (!Serial); // wait for serial port to connect. Needed for native USB
-  Serial.println("Stubby's Brewduino!");
-
+  Serial.begin( 9600 );
+  while ( !Serial ); // wait for serial port to connect. Needed for native USB
+  Serial.println( "Fuzzy Gas Brewduino!" );
+  initBuzzer();
+  initPump();
   initSettings();
   initTempSensor();
   initDisplay();
   initFuzzyLogic();
   initStepper();
-
 }
 
-void doFunctionAtInterval(void (*callBackFunction)(), unsigned long *nextEvent, unsigned long interval) {
-
+void doFunctionAtInterval( void ( *callBackFunction )(), unsigned long *nextEvent, unsigned long interval ) {
   unsigned long now = millis();
-
-  if (now  >= *nextEvent) {
-
+  if ( now  >= *nextEvent ) {
     *nextEvent = now + interval;
     callBackFunction();
-
   }
-
 }
 
 void loop() {
-
-  doFunctionAtInterval(readUserInput, &nextUserInput, READ_USER_INPUT_EVERY);
-  doFunctionAtInterval(readTempSensor, &nextTemperatureRead, READ_TEMP_SENSORS_EVERY);
-  doFunctionAtInterval(processFuzzyLogic, &nextFuzzyCompute, COMPUTE_FUZZY_EVERY);
-  doFunctionAtInterval(updateDisplay, &nextDisplayWrite, WRITE_DISPLAY_EVERY);
+  doFunctionAtInterval( readUserInput, &nextUserInput, READ_USER_INPUT_EVERY );
+  doFunctionAtInterval( readTempSensor, &nextTemperatureRead, READ_TEMP_SENSORS_EVERY );
+  doFunctionAtInterval( processAutomaticMode, &nextAutoCompute, COMPUTE_AUTO_EVERY );
+  doFunctionAtInterval( updateDisplay, &nextDisplayWrite, WRITE_DISPLAY_EVERY );
+  doFunctionAtInterval( iterateAutoDisplay, &nextAutoDisplayChange, CHANGE_AUTO_EVERY );
+  doFunctionAtInterval( updatePump, &nextPumpUpdate, UPDATE_PUMP_EVERY );
   stepper.run();
-
 }
 
 void initSettings() {
-
   allSettings tempSettings;
   int timeItTook = 0;
-
-  EEPROM.setMemPool(memoryBase, EEPROMSizeUno);
-  configAddress = EEPROM.getAddress(sizeof(allSettings));
-  timeItTook = EEPROM.readBlock(configAddress, tempSettings);	// Read EEPROM settings to temporary location to compare CONFIG_VERSION
-
+  EEPROM.setMemPool( memoryBase, EEPROMSizeMega );
+  configAddress = EEPROM.getAddress( sizeof( allSettings ) );
+  timeItTook = EEPROM.readBlock( configAddress, tempSettings ); // Read EEPROM settings to temporary location to compare CONFIG_VERSION
   // Update EEPROM from new settings configuration if necessary
-  if (tempSettings.version != CONFIG_VERSION) {
-
-    timeItTook = EEPROM.writeBlock(configAddress, settings);	// Settings have not been saved before or settings configuration has changed
-    Serial.println("Uploading new settings to EEPROM");
-
+  if ( tempSettings.version != CONFIG_VERSION ) {
+    timeItTook = EEPROM.writeBlock( configAddress, settings );  // Settings have not been saved before or settings configuration has changed
+    Serial.println( "Uploading new settings to EEPROM" );
   }
-
-  timeItTook = EEPROM.readBlock(configAddress, settings);	// Read settings from EEPROM
-
+  timeItTook = EEPROM.readBlock( configAddress, settings ); // Read settings from EEPROM
 }
 
 void updateSettings() {
-
-  EEPROM.updateBlock(configAddress, settings);
-
+  EEPROM.updateBlock( configAddress, settings );
 }
 
 void initTempSensor() {
-
   sensors.begin();
-
-  Serial.print("Locating temperature sensor... ");
-  Serial.print("Found ");
-  Serial.print(sensors.getDeviceCount(), DEC);			// locate devices on the bus
-  Serial.println(" devices.");
-
-  if (!sensors.getAddress(tempSensor, 0)) {
-
-    Serial.println("Unable to find address for Device 0");
-    //displayError("   No sensor!    ");
-
+  Serial.print( F( "Locating temperature sensor... " ) );
+  Serial.print( F( "Found " ) );
+  Serial.print( sensors.getDeviceCount(), DEC );      // locate devices on the bus
+  Serial.println( F( " device( s )." ) );
+  if ( !sensors.getAddress( tempSensor, 0 ) ) {
+    Serial.println( F( "Unable to find address for Device 0" ) );
+    displayError( "No sensor!" );
   } else {
-
-    sensors.setResolution(tempSensor, SENSOR_PRECISION);
-    sensors.setWaitForConversion(false);  			// makes it async
-    sensors.requestTemperatures();				// prime the pump for the next one - but don't wait
-
-    Serial.println("Success!");
-
+    sensors.setResolution( tempSensor, SENSOR_PRECISION );
+    sensors.setWaitForConversion( false );        // makes it async
+    sensors.requestTemperatures();        // prime the pump for the next one - but don't wait
   }
-
 }
 
 void readTempSensor() {
-
   double previous = actual;
-  actual = double(sensors.getTempC(tempSensor));
-  
-  if (previous != actual) {
-  	
+  actual = ( ( ( double( sensors.getTempC( tempSensor ) ) - settings.tempCal.rawLow ) * ( 100 - 0 ) ) / ( settings.tempCal.rawHigh - settings.tempCal.rawLow ) ) + 0;
+  if ( previous != actual ) {
     actualChanged = true;
-    
   }
-  
-  sensors.requestTemperatures(); 				// prime the pump for the next one - but don't wait
-
+  sensors.requestTemperatures();        // prime the pump for the next one - but don't wait
 }
 
 void initFuzzyLogic() {
-
-  FuzzyInput* error = new FuzzyInput(1);// With its ID in param
-
-  error->addFuzzySet(errorN); // Add FuzzySet errorN to error
-  error->addFuzzySet(errorZero); // Add FuzzySet errorZero to error
-  error->addFuzzySet(errorP); // Add FuzzySet errorN to error
-
-  fuzzy->addFuzzyInput(error);  // Add FuzzyInput to Fuzzy object
-
-  FuzzyInput* errorChange = new FuzzyInput(2);// With its ID in param
-
-  errorChange->addFuzzySet(errorChangeN);
-  errorChange->addFuzzySet(errorChangeZero);
-  errorChange->addFuzzySet(errorChangeP);
-
-  fuzzy->addFuzzyInput(errorChange); // Add FuzzyInput to Fuzzy object
-
-  FuzzyOutput* gasOutput = new FuzzyOutput(1);// With its ID in param
-
-  gasOutput->addFuzzySet(decrease); // Add FuzzySet decrease to gasOuput
-  gasOutput->addFuzzySet(decreaseSmall); // Add FuzzySet decreaseSmall to gasOuput
-  gasOutput->addFuzzySet(zeroChange); // Add FuzzySet zeroChange to gasOuput
-  gasOutput->addFuzzySet(increaseSmall); // Add FuzzySet increaseSmall to gasOuput
-  gasOutput->addFuzzySet(increase); // Add FuzzySet decrease to gasOuput
-
-  fuzzy->addFuzzyOutput(gasOutput); // Add FuzzyOutput to Fuzzy object
-
+  FuzzyInput* error = new FuzzyInput( 1 );// With its ID in param
+  error->addFuzzySet( errorN ); // Add FuzzySet errorN to error
+  error->addFuzzySet( errorZero ); // Add FuzzySet errorZero to error
+  error->addFuzzySet( errorP ); // Add FuzzySet errorN to error
+  fuzzy->addFuzzyInput( error );  // Add FuzzyInput to Fuzzy object
+  FuzzyInput* errorChange = new FuzzyInput( 2 );// With its ID in param
+  errorChange->addFuzzySet( errorChangeN );
+  errorChange->addFuzzySet( errorChangeZero );
+  errorChange->addFuzzySet( errorChangeP );
+  fuzzy->addFuzzyInput( errorChange ); // Add FuzzyInput to Fuzzy object
+  FuzzyOutput* gasOutput = new FuzzyOutput( 1 );// With its ID in param
+  gasOutput->addFuzzySet( decrease ); // Add FuzzySet decrease to gasOuput
+  gasOutput->addFuzzySet( decreaseSmall ); // Add FuzzySet decreaseSmall to gasOuput
+  gasOutput->addFuzzySet( zeroChange ); // Add FuzzySet zeroChange to gasOuput
+  gasOutput->addFuzzySet( increaseSmall ); // Add FuzzySet increaseSmall to gasOuput
+  gasOutput->addFuzzySet( increase ); // Add FuzzySet decrease to gasOuput
+  fuzzy->addFuzzyOutput( gasOutput ); // Add FuzzyOutput to Fuzzy object
   FuzzyRuleAntecedent* ifErrorN = new FuzzyRuleAntecedent(); // Instantiating an Antecedent to expression
-  ifErrorN->joinSingle(errorN); // Adding corresponding FuzzySet to Antecedent object
-
+  ifErrorN->joinSingle( errorN ); // Adding corresponding FuzzySet to Antecedent object
   FuzzyRuleAntecedent* ifErrorZero = new FuzzyRuleAntecedent(); // Instantiating an Antecedent to expression
-  ifErrorZero->joinSingle(errorZero); // Adding corresponding FuzzySet to Antecedent object
-
+  ifErrorZero->joinSingle( errorZero ); // Adding corresponding FuzzySet to Antecedent object
   FuzzyRuleAntecedent* ifErrorP = new FuzzyRuleAntecedent(); // Instantiating an Antecedent to expression
-  ifErrorP->joinSingle(errorP); // Adding corresponding FuzzySet to Antecedent object
-
+  ifErrorP->joinSingle( errorP ); // Adding corresponding FuzzySet to Antecedent object
   FuzzyRuleAntecedent* ifErrorZeroANDErrorChangeN = new FuzzyRuleAntecedent(); // Instantiating an Antecedent to expression
-  ifErrorZeroANDErrorChangeN->joinWithAND(errorZero, errorChangeN);
-
+  ifErrorZeroANDErrorChangeN->joinWithAND( errorZero, errorChangeN );
   FuzzyRuleAntecedent* ifErrorZeroANDErrorChangeP = new FuzzyRuleAntecedent(); // Instantiating an Antecedent to expression
-  ifErrorZeroANDErrorChangeP->joinWithAND(errorZero, errorChangeP);
-
+  ifErrorZeroANDErrorChangeP->joinWithAND( errorZero, errorChangeP );
   FuzzyRuleConsequent* thenGasOutputDecrease = new FuzzyRuleConsequent(); // Instantiating a Consequent to expression
-  thenGasOutputDecrease->addOutput(decrease);// Adding corresponding FuzzySet to Consequent object
-
+  thenGasOutputDecrease->addOutput( decrease );// Adding corresponding FuzzySet to Consequent object
   FuzzyRuleConsequent* thenGasOutputDecreaseSmall = new FuzzyRuleConsequent(); // Instantiating a Consequent to expression
-  thenGasOutputDecreaseSmall->addOutput(decreaseSmall);// Adding corresponding FuzzySet to Consequent object
-
+  thenGasOutputDecreaseSmall->addOutput( decreaseSmall );// Adding corresponding FuzzySet to Consequent object
   FuzzyRuleConsequent* thenGasOutputZeroChange = new FuzzyRuleConsequent(); // Instantiating a Consequent to expression
-  thenGasOutputZeroChange->addOutput(zeroChange);// Adding corresponding FuzzySet to Consequent object
-
+  thenGasOutputZeroChange->addOutput( zeroChange );// Adding corresponding FuzzySet to Consequent object
   FuzzyRuleConsequent* thenGasOutputIncreaseSmall = new FuzzyRuleConsequent(); // Instantiating a Consequent to expression
-  thenGasOutputIncreaseSmall->addOutput(increaseSmall);// Adding corresponding FuzzySet to Consequent object
-
+  thenGasOutputIncreaseSmall->addOutput( increaseSmall );// Adding corresponding FuzzySet to Consequent object
   FuzzyRuleConsequent* thenGasOutputIncrease = new FuzzyRuleConsequent(); // Instantiating a Consequent to expression
-  thenGasOutputIncrease->addOutput(increase);// Adding corresponding FuzzySet to Consequent object
-
-
+  thenGasOutputIncrease->addOutput( increase );// Adding corresponding FuzzySet to Consequent object
   // FuzzyRule "IF error is Zero THEN gasOutput is zeroChange"
-  FuzzyRule* fuzzyRule01 = new FuzzyRule(1, ifErrorZero, thenGasOutputZeroChange); // Passing the Antecedent and the Consequent of expression
-  fuzzy->addFuzzyRule(fuzzyRule01); // Adding FuzzyRule to Fuzzy object
-
+  FuzzyRule* fuzzyRule01 = new FuzzyRule( 1, ifErrorZero, thenGasOutputZeroChange ); // Passing the Antecedent and the Consequent of expression
+  fuzzy->addFuzzyRule( fuzzyRule01 ); // Adding FuzzyRule to Fuzzy object
   // FuzzyRule "IF error is negative THEN gasOutput is increase"
-  FuzzyRule* fuzzyRule02 = new FuzzyRule(2, ifErrorN, thenGasOutputIncrease); // Passing the Antecedent and the Consequent of expression
-  fuzzy->addFuzzyRule(fuzzyRule02); // Adding FuzzyRule to Fuzzy object
-
+  FuzzyRule* fuzzyRule02 = new FuzzyRule( 2, ifErrorN, thenGasOutputIncrease ); // Passing the Antecedent and the Consequent of expression
+  fuzzy->addFuzzyRule( fuzzyRule02 ); // Adding FuzzyRule to Fuzzy object
   // FuzzyRule "IF error is positive THEN gasOutput is decrease"
-  FuzzyRule* fuzzyRule03 = new FuzzyRule(3, ifErrorP, thenGasOutputDecrease); // Passing the Antecedent and the Consequent of expression
-  fuzzy->addFuzzyRule(fuzzyRule03); // Adding FuzzyRule to Fuzzy object
-
+  FuzzyRule* fuzzyRule03 = new FuzzyRule( 3, ifErrorP, thenGasOutputDecrease ); // Passing the Antecedent and the Consequent of expression
+  fuzzy->addFuzzyRule( fuzzyRule03 ); // Adding FuzzyRule to Fuzzy object
   // Fuzzyrule "IF error is Zero AND error change is positive THEN gasOutput decreaseSmall
-  FuzzyRule* fuzzyRule04 = new FuzzyRule(4, ifErrorZeroANDErrorChangeP, thenGasOutputDecreaseSmall); // Passing the Antecedent and the Consequent of expression
-  fuzzy->addFuzzyRule(fuzzyRule04); // Adding FuzzyRule to Fuzzy object
-
+  FuzzyRule* fuzzyRule04 = new FuzzyRule( 4, ifErrorZeroANDErrorChangeP, thenGasOutputDecreaseSmall ); // Passing the Antecedent and the Consequent of expression
+  fuzzy->addFuzzyRule( fuzzyRule04 ); // Adding FuzzyRule to Fuzzy object
   // Fuzzyrule "IF error is Zero AND error change is negative THEN gasOutput increaseSmall
-  FuzzyRule* fuzzyRule05 = new FuzzyRule(5, ifErrorZeroANDErrorChangeN, thenGasOutputIncreaseSmall); // Passing the Antecedent and the Consequent of expression
-  fuzzy->addFuzzyRule(fuzzyRule05); // Adding FuzzyRule to Fuzzy object
-
+  FuzzyRule* fuzzyRule05 = new FuzzyRule( 5, ifErrorZeroANDErrorChangeN, thenGasOutputIncreaseSmall ); // Passing the Antecedent and the Consequent of expression
+  fuzzy->addFuzzyRule( fuzzyRule05 ); // Adding FuzzyRule to Fuzzy object
 }
 
-void processFuzzyLogic() {
-
-  if (opState == AUTO) {
-
+void processAutomaticMode() {
+  if ( opState == AUTO ) {
     double previousError = error;
-
-    error = actual - settings.setPoint;
-    fuzzy->setInput(1, error);
-    fuzzy->setInput(2, (error - previousError) / (COMPUTE_FUZZY_EVERY / 1000.0));
-
+    error = actual - recipes[settings.currentRecipe].steps[settings.currentStep].temperature;
+    if ( !stepTargetReached && ( error >= 0 ) ) {
+      // target temperature has been reached. start countdown
+      stepTargetReached = millis();
+    }
+    // hops additions
+    if ( stepTargetReached && settings.currentStep == 5 ) {
+      if ( settings.currentHopsAddition <= 2 ) {
+        if ( stepTargetReached + recipes[settings.currentRecipe].steps[settings.currentStep].stepTime * MIN_TO_MS - millis() <= recipes[settings.currentRecipe].hopsAddition[settings.currentHopsAddition] * MIN_TO_MS ) {
+          displayAlert( "ADD HOPS" );
+          settings.currentHopsAddition++;
+        }
+      }
+    }
+    if ( stepTargetReached && ( stepTargetReached + ( recipes[settings.currentRecipe].steps[settings.currentStep].stepTime * MIN_TO_MS ) <= millis() ) ) {
+      // end of step has been reached
+      // last hops
+      if ( recipes[settings.currentRecipe].hopsAddition[settings.currentHopsAddition] == 0 ) {
+        displayAlert( "ADD HOPS" );
+      }
+      // perform end user alert
+      if ( String( recipes[settings.currentRecipe].steps[settings.currentStep].endMessage ) != "" ) {
+        displayAlert( recipes[settings.currentRecipe].steps[settings.currentStep].endMessage );
+      }
+      // increment step
+      while ( true ) {
+        settings.currentStep++;
+        if ( settings.currentStep > 5 ) {
+          // Automatic mode is complete
+          settings.currentRecipe = -1;
+          settings.currentStep = 0;
+          settings.currentHopsAddition = 0;
+          opState = OFF;
+          processModeChange();
+          updateSettings();
+          return;
+        }
+        if ( recipes[settings.currentRecipe].steps[settings.currentStep].active ) {
+          // start of next step
+          stepTargetReached = 0;
+          pumpState = ( settings.currentStep < 5 ? RECIRC : NORECIRC );
+          pumpStateChanged = true;
+          // perform start user alert
+          if ( String( recipes[settings.currentRecipe].steps[settings.currentStep].startMessage ) != "" ) {
+            displayAlert( recipes[settings.currentRecipe].steps[settings.currentStep].startMessage );
+          }
+          updateSettings();
+          break;
+        }
+      }
+    }
+    fuzzy->setInput( 1, error );
+    fuzzy->setInput( 2, ( error - previousError ) / ( COMPUTE_AUTO_EVERY / 1000.0 ) );
     fuzzy->fuzzify();
-
-    float output = fuzzy->defuzzify(1);
-
-    int tPosition = (int)(stepper.currentPosition() + ((output / 100) * (settings.maxPosition - settings.minPosition)));
-    tPosition = min(settings.maxPosition, tPosition);
-    tPosition = max(settings.minPosition, tPosition);
-
-    stepper.moveTo(tPosition);
-
+    float output = fuzzy->defuzzify( 1 );
+    int tPosition = ( int )( stepper.currentPosition() + ( ( output / 100 ) * ( settings.maxPosition - settings.minPosition ) ) );
+    tPosition = min( settings.maxPosition, tPosition );
+    tPosition = max( settings.minPosition, tPosition );
+    stepper.moveTo( ( settings.currentStep == 5 ? settings.maxPosition : tPosition ) );
   }
-
 }
 
 void initDisplay() {
-
-  lcd.begin(16, 2);
+  lcd.begin( 16, 2 );
   lcd.clear();
-
-  lcd.createChar(1, degree); 					// create degree symbol from the binary
-
-  lcd.setBacklight(WHITE);
-
-  lcd.print(F(" Stubbydrainer's"));
-  lcd.setCursor(0, 1);
-  lcd.print(F("   Brewduino!"));
-
-  nextDisplayWrite = millis() + 3000;				// Splash screen delay
-
+  lcd.createChar( 1, degree );          // create degree symbol from the binary
+  lcd.setBacklight( WHITE );
+  lcd.print( centreForLCD( 16,  "Fuzzy Gas" ) );
+  lcd.setCursor( 0, 1 );
+  lcd.print( centreForLCD( 16,  "Brewduino!" ) );
+  nextDisplayWrite = millis() + 2000;       // Splash screen delay
 }
 
 void updateDisplay() {
-
-  if (selectedStateChanged) {
-
-    String topLine = "";
-
-    topLine.concat((opState == OFF ? " " : "<"));
-    strcpy_P(messageToPC, (char*)pgm_read_word(&(opStateTable[opState])));
-
-    for (int i = 0; i < (int)floor((double)(14 - strlen(messageToPC)) / 2); i++) {
-
-      topLine.concat(" ");
-    }
-
-    topLine.concat(messageToPC);
-
-    for (int i = 0; i < (int)ceil((double)(14 - strlen(messageToPC)) / 2); i++) {
-
-      topLine.concat(" ");
-
-    }
-
-    topLine.concat((opState == SETUP ? " " : ">"));
-    lcd.setCursor(0, 0);
-    lcd.print(topLine);
-
-    /*
-        lcd.setCursor(0, 0);
-        lcd.print((opState == OFF ? " " : "<"));
-        strcpy_P(messageToPC, (char*)pgm_read_word(&(opStateTable[opState])));
-        for (int i = 0; i < (int)floor((double)(14 - strlen(messageToPC)) / 2); i++) {
-          lcd.print(" ");
-        }
-        lcd.print(messageToPC);
-        for (int i = 0; i < (int)ceil((double)(14 - strlen(messageToPC)) / 2); i++) {
-          lcd.print(" ");
-        }
-        lcd.print((opState == SETUP ? " " : ">"));
-    */
+  // Top line of LCD
+  if ( opStateChanged  ) {
+    strcpy_P( messageToPC, ( char* )pgm_read_word( &( opStateTable[opState] ) ) );
+    lcd.setCursor( 0, 0 );
+    lcd.print( ( opState == OFF ? " " : "<" ) + centreForLCD( 14, String( messageToPC ) ) + ( opState == PUMP ? " " : ">" ) );
   }
-
-  switch (opState) {
-
-    case OFF:
-
-      if (actualChanged) {
-
-        lcd.setCursor(0, 1);
-        lcd.print("   A=");
-        dtostrf(actual, 5, DISPLAY_ACTUAL_DECIMALS, lcd_buffer);
-        lcd.print(lcd_buffer);
-        lcd.write(1);
-        lcd.print("c    ");
-
-      }
-
-      break;
-
-    case SETUP:
-
-      lcd.setCursor(0, 1);
-      lcd.print("                ");
-
-      break;
-
-    default:
-
-      if (opStateChanged) {
-
-        lcd.setCursor(0, 1);
-        lcd.print("T/A=");
-
-        lcd.setCursor(8, 1);
-        lcd.print("/");
-
-        lcd.setCursor(14, 1);
-        lcd.write(1);
-        lcd.print("c");
-
-        targetChanged = true;
-        actualChanged = true;
-
-      }
-
-      if (targetChanged) {
-
-        lcd.setCursor(4, 1);
-        dtostrf(settings.setPoint, 3, DISPLAY_TARGET_DECIMALS, lcd_buffer);
-        lcd.print(lcd_buffer);
-
-      }
-
-      if (actualChanged) {
-
-        lcd.setCursor(9, 1);
-        dtostrf(actual, 5, DISPLAY_ACTUAL_DECIMALS, lcd_buffer);
-        lcd.print(lcd_buffer);
-
-      }
-
-      break;
-
+  if ( selectedStateChanged ) {
+    strcpy_P( messageToPC, ( char* )pgm_read_word( &( opStateTable[selectedState] ) ) );
+    lcd.setCursor( 0, 0 );
+    lcd.print( ( selectedState == OFF ? " " : "<" ) + centreForLCD( 14, String( messageToPC ) ) + ( selectedState == PUMP ? " " : ">" ) );
   }
-
+  String bottomLine = "";
+  bool degCRequired = false;
+  // Create Message
+  if ( opStateChanged || actualChanged || targetChanged || autoDisplayChanged || pumpStateChanged ) {
+    switch ( opState ) {
+      case OFF:
+        degCRequired = true;
+        dtostrf( actual, 0, DISPLAY_ACTUAL_DECIMALS, messageToPC );
+        bottomLine = "A=" + String( messageToPC );
+        break;
+      case IGNITION:
+        bottomLine = "IGNITE!";
+        break;
+      case AUTO:
+        switch ( autoDisplayState ) {
+          case TA:
+            degCRequired = true;
+            dtostrf( recipes[settings.currentRecipe].steps[settings.currentStep].temperature, 0, DISPLAY_ACTUAL_DECIMALS, messageToPC );
+            bottomLine = "T/A=" + String( messageToPC ) + "/";
+            dtostrf( actual, 0, DISPLAY_ACTUAL_DECIMALS, messageToPC );
+            // bottomLine = "T/A=" + String( recipes[settings.currentRecipe].steps[settings.currentStep].temperature ) + "/" + String( messageToPC );
+            bottomLine += String( messageToPC );
+            break;
+          case RECIPETITLE:
+            bottomLine = recipes[settings.currentRecipe].title;
+            break;
+          case STEPTITLE:
+            bottomLine = recipes[settings.currentRecipe].steps[settings.currentStep].title;
+            break;
+          case TIMEREMAINING:
+            if ( stepTargetReached ) {
+              bottomLine = msToHMS( stepTargetReached + ( recipes[settings.currentRecipe].steps[settings.currentStep].stepTime * MIN_TO_MS ) <= millis() ? 0 : ( stepTargetReached + ( recipes[settings.currentRecipe].steps[settings.currentStep].stepTime * MIN_TO_MS ) ) - millis() );
+            } else {
+              bottomLine = msToHMS( recipes[settings.currentRecipe].steps[settings.currentStep].stepTime * MIN_TO_MS );
+            }
+            break;
+          default:
+            break;
+        }
+        break;
+      case MAN:
+        degCRequired = true;
+        dtostrf( actual, 0, DISPLAY_ACTUAL_DECIMALS, messageToPC );
+        bottomLine = "D/A=" + String( stepper.currentPosition() ) + "/" + String( messageToPC );
+        break;
+      case PUMP:
+        bottomLine = ( pumpState ? "ON" : "OFF" );
+        break;
+      default:
+        break;
+    }
+    // Write message including leading spaces
+    bottomLine = addLeadingSpacesForCentering( 16 - ( degCRequired ? 2 : 0 ), bottomLine );
+    lcd.setCursor( 0, 1 );
+    lcd.print( bottomLine );
+    // Write degrees c if necessary
+    if ( degCRequired ) {
+      lcd.write( 1 );
+      lcd.print( "c" );
+    } else {
+    }
+    bottomLine = addTrailingSpacesForCentering( 16 - bottomLine.length() - ( degCRequired ? 2 : 0 ), "" );
+    // Write trailing space
+    lcd.print( bottomLine );
+  }
   opStateChanged = false;
   selectedStateChanged = false;
-  targetChanged = false;
   actualChanged = false;
+  targetChanged = false;
+  autoDisplayChanged = false;
+  pumpStateChanged = false;
+}
 
+void blinkLCD( uint8_t colour = RED ) {
+  if ( lastBacklight != colour ) {
+    lcd.setBacklight( colour );
+    lastBacklight = colour;
+    if ( colour != WHITE) {
+      tone( BUZZER_WIRE_PWR, BUZZER_FREQUENCY );
+    }
+  }
+  else {
+    lcd.setBacklight( OFF );
+    lastBacklight = OFF;
+    noTone( BUZZER_WIRE_PWR );
+  }
+}
+
+void displaySuccess( const char message[] ) {
+  lcd.setCursor( 0, 0 );
+  lcd.print( message );
+  lcd.setCursor( 0, 1 );
+  lcd.print( "                " );
+  blinkLCD( GREEN );
+  delay( 1000 );
+  lcd.setBacklight( WHITE );
+}
+
+void blinkRed() {
+  blinkLCD( RED );
+}
+
+void blinkBlue() {
+  blinkLCD( BLUE );
+}
+
+void displayAlert( const char message[] ) {
+  // remember previous dial position, move dial to minimum position
+  int pPosition = stepper.currentPosition();
+  stepper.moveTo( settings.minPosition );
+  // top Line
+  lcd.setCursor( 0, 0 );
+  lcd.print( centreForLCD( 16, "ALERT!" ) );
+  // bottom line
+  lcd.setCursor( 0, 1 );
+  lcd.print( centreForLCD( 16, message ) );
+  // wait for user response
+  while ( !readButtons() ) {
+    doFunctionAtInterval( blinkBlue, &nextBlinkLCD, 250 );
+  }
+  noTone( BUZZER_WIRE_PWR );
+  // put dial in previous position
+  stepper.moveTo( pPosition );
+  lcd.setBacklight( WHITE );
+  opStateChanged = true;
+  actualChanged = true;
+}
+
+void displayError( const char message[] ) {
+  lcd.setCursor( 0, 0 );
+  lcd.print( centreForLCD( 16, "ERROR!" ) );
+  lcd.setCursor( 0, 1 );
+  lcd.print( message );
+  while ( !readButtons() ) {
+    doFunctionAtInterval( blinkRed, &nextBlinkLCD, 250 );
+  }
+  noTone( BUZZER_WIRE_PWR );
+  lcd.setBacklight( WHITE );
+  opState = OFF;
+  processModeChange();
+}
+
+String centreForLCD( int lineLength, String str ) {
+  return addTrailingSpacesForCentering( lineLength, addLeadingSpacesForCentering( lineLength, str ) );
+}
+
+String addLeadingSpacesForCentering( int lineLength, String str ) {
+  String result = "";
+  for ( int i = 0; i < ( int )floor( ( double )( lineLength - str.length() ) / 2 ); i++ ) {
+    result.concat( " " );
+  }
+  result.concat( str );
+  return result;
+}
+
+String addTrailingSpacesForCentering( int lineLength, String str ) {
+  String result = str;
+  // Assumes leading spaces have been added already
+  for ( int i = 0; i < ( lineLength - str.length() ); i++ ) {
+    result.concat( " " );
+  }
+  return result;
+}
+
+bool getResponseYN( const char message[] ) {
+  bool response = true;;
+  uint8_t buttons;
+  String bottomLine = "";
+  lcd.setCursor( 0, 0 );
+  lcd.print( centreForLCD( 16, message ) );
+  lcd.setCursor( 0, 1 );
+  lcd.print( "<" + centreForLCD( 14, String( ( response ? "YES" : "NO" ) ) ) + ">" );
+  while (true) {
+    buttons = readButtons();
+    if ( buttons ) {
+      if ( buttons & BUTTON_LEFT ) {
+        response = !response;
+      }
+      if ( buttons & BUTTON_RIGHT ) {
+        response = !response;
+      }
+      if ( buttons & BUTTON_SELECT ) {
+        return response;
+      }
+      lcd.setCursor( 0, 1 );
+      lcd.print( "<" + centreForLCD( 14, String( ( response ? "YES" : "NO" ) ) ) + ">" );
+    }
+  }
+}
+
+int getResponseChoices( const char message[], const char choices[][16], int numChoices ) {
+  int response = 0;
+  uint8_t buttons;
+  String bottomLine = "";
+  lcd.setCursor( 0, 0 );
+  lcd.print( centreForLCD( 16, message ) );
+  lcd.setCursor( 0, 1 );
+  lcd.print( ( response == 0 ? " " : "<" ) + centreForLCD( 14, String( choices[response] ) ) + ( response == numChoices - 1 ? " " : ">" ) );
+  while (true) {
+    buttons = readButtons();
+    if ( buttons ) {
+      if ( buttons & BUTTON_LEFT ) {
+        response = max( 0, response - 1 );
+      }
+      if ( buttons & BUTTON_RIGHT ) {
+        response = min ( numChoices - 1, response + 1 );
+      }
+      if ( buttons & BUTTON_SELECT ) {
+        return response;
+      }
+      lcd.setCursor( 0, 1 );
+      lcd.print( ( response == 0 ? " " : "<" ) + centreForLCD( 14, String( choices[response] ) ) + ( response == numChoices - 1 ? " " : ">" ) );
+    }
+  }
+}
+
+void iterateAutoDisplay() {  
+  autoDisplayState = ( autoDisplay )( autoDisplayState == ( recipes[settings.currentRecipe].steps[settings.currentStep].stepTime == 0  ? TA : TIMEREMAINING ) ? 0 : autoDisplayState + 1 );
+  autoDisplayChanged = true;
+}
+
+String msToHMS( unsigned long ms ) {
+  // 1- Convert to seconds:
+  int seconds = ms / 1000;
+  // 2- Extract hours:
+  int hours = seconds / 3600 ;
+  seconds = seconds % 3600; // seconds remaining after extracting hours
+  // 3- Extract minutes:
+  int minutes = seconds / 60; // 60 seconds in 1 minute
+  // 4- Keep only seconds not extracted to minutes:
+  seconds = seconds % 60;
+  return String( hours ) + ( minutes < 10 ? ":0" : ":" ) + String( minutes ) + ( seconds < 10 ? ":0" : ":" ) + String( seconds );
 }
 
 void initStepper() {
-
   AFMS.begin(); // Start the bottom shield
-
-  stepper.setMaxSpeed(200.0);
-  stepper.setAcceleration(100.0);
-  stepper.setCurrentPosition(0);
-
+  stepper.setMaxSpeed( 200.0 );
+  stepper.setAcceleration( 100.0 );
+  stepper.setCurrentPosition( 0 );
 }
 
 void readUserInput() {
-
+  readButtonInput();
   readSerialInput();
+}
 
+void readButtonInput() {
+  uint8_t buttons = readButtons();
+  if ( buttons ) {
+    if ( buttons & BUTTON_LEFT ) {
+      selectedState = ( operatingState )max( OFF, int( selectedState ) - 1 );
+      selectedStateChanged = true;
+    }
+    if ( buttons & BUTTON_RIGHT ) {
+      selectedState = ( operatingState )min( PUMP, int( selectedState ) + 1 );
+      selectedStateChanged = true;
+    }
+    if ( buttons & BUTTON_UP ) {
+      switch ( opState ) {
+        case MAN:
+          stepper.moveTo( stepper.currentPosition() + jogSize );
+          break;
+        default:
+          break;
+      }
+    }
+    if ( buttons & BUTTON_DOWN ) {
+      switch ( opState ) {
+        case MAN:
+          stepper.moveTo( stepper.currentPosition() - jogSize );
+          break;
+        default:
+          break;
+      }
+    }
+    if ( buttons & BUTTON_SELECT ) {
+      opState = selectedState;
+      processModeChange();
+    }
+  }
+}
+
+uint8_t readButtons() {
+  uint8_t buttons = lcd.readButtons();
+  if ( buttons ) {
+    tone( BUZZER_WIRE_PWR, BUZZER_FREQUENCY );
+    delay( 20 );
+    noTone( BUZZER_WIRE_PWR );
+    lastButtonPressed = buttons;
+    return 0;              // Wait until button is release before sending
+  }
+  else {
+    buttons = lastButtonPressed;
+    lastButtonPressed = 0;
+    return buttons;           // Button is released - send!
+  }
 }
 
 void readSerialInput() {
-
   static boolean recvInProgress = false;
   static byte ndx = 0;
   char startMarker = '<';
   char endMarker = '>';
   char rc;
-
-  while (Serial.available() > 0 && newData == false) {
-
+  while ( Serial.available() > 0 && newData == false ) {
     rc = Serial.read();
-
-    if (recvInProgress == true) {
-
-      if (rc != endMarker) {
-
+    if ( recvInProgress == true ) {
+      if ( rc != endMarker ) {
         receivedChars[ndx] = rc;
         ndx++;
-
-        if (ndx >= numChars) {
-
-          ndx = numChars - 1;
-
+        if ( ndx >= BUFFER_SIZE ) {
+          ndx = BUFFER_SIZE - 1;
         }
       }
       else {
-
         receivedChars[ndx] = '\0';// terminate the string
         recvInProgress = false;
         ndx = 0;
         newData = true;
-
       }
     }
-    else if (rc == startMarker) {
-
+    else if ( rc == startMarker ) {
       recvInProgress = true;
-
     }
-
   }
-
-  if (newData == true) {
-
-    strcpy(tempChars, receivedChars);
+  if ( newData == true ) {
+    strcpy( tempChars, receivedChars );
     // this temporary copy is necessary to protect the original data
-    //   because strtok() used in parseData() replaces the commas with \0
+    // because strtok() used in parseData() replaces the commas with \0
     parseSerialInput();
     newData = false;
-
   }
-
 }
 
 void parseSerialInput() {
-
   // split the data into its parts
-  char * strtokIndx;	// this is used by strtok() as an index
-  strtokIndx = strtok(tempChars, ",");	// get the first part - the string
-  strcpy(messageFromPC, strtokIndx);	// copy it to messageFromPC
-  strtokIndx = strtok(NULL, ",");	// this continues where the previous call left off
-  doubleFromPC = atof(strtokIndx);
-
-  Serial.print(messageFromPC); Serial.print(": ");
-
-  if (String(messageFromPC) == "L") {
-
-    Serial.println(stepper.currentPosition() + doubleFromPC);
-    stepper.moveTo(stepper.currentPosition() + doubleFromPC);
+  char * strtokIndx;  // this is used by strtok() as an index
+  strtokIndx = strtok( tempChars, ", " );  // get the first part - the string
+  strcpy( bufferChars, strtokIndx );  // copy it to bufferChars
+  strtokIndx = strtok( NULL, ", " ); // this continues where the previous call left off
+  doubleFromPC = atof( strtokIndx );
+  Serial.print( bufferChars ); Serial.print( ": " );
+  if ( String( bufferChars ) == "L" ) {
+    Serial.println( stepper.currentPosition() + doubleFromPC );
+    stepper.moveTo( stepper.currentPosition() + doubleFromPC );
     return;
-
   }
-
-  if (String(messageFromPC) == "R") {
-
-    Serial.println(stepper.currentPosition() - doubleFromPC);
-    stepper.moveTo(stepper.currentPosition() - doubleFromPC);
+  if ( String( bufferChars ) == "R" ) {
+    Serial.println( stepper.currentPosition() - doubleFromPC );
+    stepper.moveTo( stepper.currentPosition() - doubleFromPC );
     return;
-
   }
-
-  if (String(messageFromPC) == "DIAL") {
-
-    Serial.println(doubleFromPC);
-    stepper.moveTo(doubleFromPC);
+  if ( String( bufferChars ) == "DIAL" ) {
+    Serial.println( doubleFromPC );
+    stepper.moveTo( doubleFromPC );
     return;
-
   }
-
-  if (String(messageFromPC) == "SETPOINT") {
-
-    Serial.println(doubleFromPC);
-    settings.setPoint = doubleFromPC;
-    updateSettings();
-    return;
-
-  }
-
-  if (String(messageFromPC) == "MAX") {
-
-    Serial.println(doubleFromPC);
+  if ( String( bufferChars ) == "MAX" ) {
+    Serial.println( doubleFromPC );
     settings.maxPosition = doubleFromPC;
     updateSettings();
     return;
-
   }
-
-  if (String(messageFromPC) == "MIN") {
-
-    Serial.println(doubleFromPC);
+  if ( String( bufferChars ) == "MIN" ) {
+    Serial.println( doubleFromPC );
     settings.minPosition = doubleFromPC;
     updateSettings();
     return;
-
   }
-
-  if (String(messageFromPC) == "MODE") {
-
-    operatingState newOpState = (operatingState)doubleFromPC;
-
-    if (newOpState == opState) {
-
-      Serial.println("not required");
+  if ( String( bufferChars ) == "RAWLOW" ) {
+    Serial.println( doubleFromPC );
+    settings.tempCal.rawLow = doubleFromPC;
+    updateSettings();
+    return;
+  }
+  if ( String( bufferChars ) == "RAWHIGH" ) {
+    Serial.println( doubleFromPC );
+    settings.tempCal.rawHigh = doubleFromPC;
+    updateSettings();
+    return;
+  }
+  if ( String( bufferChars ) == "MODE" ) {
+    operatingState newOpState = ( operatingState )doubleFromPC;
+    if ( newOpState == opState ) {
+      Serial.println( "not required" );
       return;
-
     }
-
-    if ((newOpState >= OFF) && (newOpState <= SETUP)) {
-
-      strcpy_P(messageToPC, (char*)pgm_read_word(&(opStateTable[newOpState])));
-      Serial.println(messageToPC);
+    if ( ( newOpState >= OFF ) && ( newOpState <= PUMP ) ) {
+      strcpy_P( messageToPC, ( char* )pgm_read_word( &( opStateTable[newOpState] ) ) );
+      Serial.println( messageToPC );
       opState = newOpState;
       processModeChange();
       return;
-
     }
-
   }
-
-  Serial.println ("not recognised.");
-
+  Serial.println ( "not recognised." );
 }
 
 void processModeChange() {
-
-  opStateChanged = true;
-  selectedStateChanged = true;
-  actualChanged = true;
-
-  switch (opState) {
-
+  bool chooseRecipe = true;
+  switch ( opState ) {
     case OFF:
-
-      stepper.moveTo(0);
+      pumpState = NORECIRC;
+      stepper.moveTo( 0 );
       break;
-
     case IGNITION:
-
-      Serial.println("IGNITION Turning on gas now! IGNITE!");
-      stepper.runToNewPosition(settings.maxPosition);
-      delay(5000);
-      stepper.moveTo(settings.minPosition);
-      opState = MAN;
+      pumpState = NORECIRC;
+      if ( !ignitionHasOccured ) {
+        if ( userResponseWaterFilled || ( !userResponseWaterFilled && getResponseYN( "WATER FILLED?" ) ) ) {
+          userResponseWaterFilled = true;
+          // Force display update since we are using delay here
+          opStateChanged = true;
+          actualChanged = true;
+          updateDisplay();
+          stepper.runToNewPosition( settings.maxPosition );
+          delay( 2500 );
+          stepper.moveTo( settings.minPosition );
+          opState = MAN;
+          ignitionHasOccured = true;
+        } else {
+          opState = OFF;
+          processModeChange();
+        }
+      }
       break;
-
+    case AUTO:
+      if ( settings.currentRecipe != -1 ) {
+        if ( getResponseYN( "CONTINUE PREV?" ) ) {
+          chooseRecipe = false;
+        }
+      }
+      if (chooseRecipe) {
+        char choices[NUMBER_OF_RECIPES][16];
+        for (int i = 0; i < NUMBER_OF_RECIPES; i++) {
+          for (int j = 0; j < 16; j++) {
+            choices[i][j] = recipes[i].title[j];
+          }
+        }
+        settings.currentRecipe = getResponseChoices( "CHOOSE RECIPE", choices, 3 );
+        settings.currentStep = 0;
+        settings.currentHopsAddition = 0;
+      }
+      stepTargetReached = 0;
+      pumpState = ( settings.currentStep < 5 ? RECIRC : NORECIRC );
+      if ( String( recipes[settings.currentRecipe].steps[settings.currentStep].startMessage ) != "" ) {
+        displayAlert( recipes[settings.currentRecipe].steps[settings.currentStep].startMessage );
+      }
+      updateSettings();
+      break;
+    case PUMP:
+      pumpState = ( pumpState ? NORECIRC : RECIRC );
+      break;
     default:
-
       break;
-
   }
-
+  selectedState = opState;
+  opStateChanged = true;
+  actualChanged = true;
+  pumpStateChanged = true;
 }
 
+void initBuzzer() {
+  pinMode(BUZZER_WIRE_PWR, OUTPUT);
+  tone(BUZZER_WIRE_PWR, BUZZER_FREQUENCY);
+  delay(20);
+  noTone(BUZZER_WIRE_PWR);
+}
+
+void initPump() {
+  pinMode(PUMP_WIRE_PWR, OUTPUT);
+  pinMode(PUMP_WIRE_GND, OUTPUT);
+}
+
+void updatePump() {
+  digitalWrite(PUMP_WIRE_PWR, (userResponseWaterFilled && pumpState && actual < 84 ? HIGH : LOW ) );
+}
