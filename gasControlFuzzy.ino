@@ -474,13 +474,15 @@ void blinkLCD( uint8_t colour = RED ) {
     lcd.setBacklight( colour );
     lastBacklight = colour;
     if ( colour != WHITE) {
-      tone( BUZZER_WIRE_PWR, BUZZER_FREQUENCY );
+      //tone( BUZZER_WIRE_PWR, BUZZER_FREQUENCY );
+      digitalWrite(BUZZER_WIRE_PWR, HIGH);
     }
   }
   else {
     lcd.setBacklight( OFF );
     lastBacklight = OFF;
-    noTone( BUZZER_WIRE_PWR );
+    //noTone( BUZZER_WIRE_PWR );
+    digitalWrite(BUZZER_WIRE_PWR, LOW);
   }
 }
 
@@ -681,9 +683,11 @@ void readButtonInput() {
 uint8_t readButtons() {
   uint8_t buttons = lcd.readButtons();
   if ( buttons ) {
-    tone( BUZZER_WIRE_PWR, BUZZER_FREQUENCY );
-    delay( 20 );
-    noTone( BUZZER_WIRE_PWR );
+  //tone(BUZZER_WIRE_PWR, BUZZER_FREQUENCY);
+  digitalWrite(BUZZER_WIRE_PWR, HIGH);   // turn the LED on (HIGH is the voltage level)
+  delay(20);
+  //noTone(BUZZER_WIRE_PWR);
+  digitalWrite(BUZZER_WIRE_PWR, LOW);    // turn the LED off by making the voltage LOW
     lastButtonPressed = buttons;
     return 0;              // Wait until button is release before sending
   }
@@ -859,9 +863,12 @@ void processModeChange() {
 
 void initBuzzer() {
   pinMode(BUZZER_WIRE_PWR, OUTPUT);
-  tone(BUZZER_WIRE_PWR, BUZZER_FREQUENCY);
+  //tone(BUZZER_WIRE_PWR, BUZZER_FREQUENCY);
+  digitalWrite(BUZZER_WIRE_PWR, HIGH);   // turn the LED on (HIGH is the voltage level)
   delay(20);
-  noTone(BUZZER_WIRE_PWR);
+  //noTone(BUZZER_WIRE_PWR);
+  digitalWrite(BUZZER_WIRE_PWR, LOW);    // turn the LED off by making the voltage LOW
+
 }
 
 void initPump() {
