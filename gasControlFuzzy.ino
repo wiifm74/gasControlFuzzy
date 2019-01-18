@@ -67,6 +67,7 @@ AccelStepper stepper( forwardstep, backwardstep );     // Wrap the stepper in an
 enum operatingState { OFF = 0, IGNITION, AUTO, MAN, PUMP };
 enum pumpStates { NORECIRC = 0, RECIRC };
 enum autoDisplay { RECIPETITLE = 0, STEPTITLE, TA, TIMEREMAINING };
+enum dialDirection ( ANTI-CLOCKWISE = 0, CLOCKWISE );
 
 struct sensorCalibration {
   double rawLow;
@@ -90,6 +91,7 @@ struct recipe {
 
 struct allSettings {
   int version;
+  int directionOfDialToIncreaseHeat;
   sensorCalibration tempCal;
   double minPosition;
   double maxPosition;
@@ -111,7 +113,7 @@ int configAddress;
 #ifdef FEATURE_ENABLED_MYSETTINGS
 #include "mySettings.h"
 #else
-allSettings settings = { CONFIG_VERSION, { 0.0, 100.0 }, 0, 0, -1, 0, 0 };
+allSettings settings = { CONFIG_VERSION, ANTI-CLOCKWISE, { 0.0, 100.0 }, 0, 0, -1, 0, 0 };
 #endif
 
 
@@ -366,9 +368,9 @@ void processAutomaticMode() {
     fuzzy->setInput( 2, ( error - previousError ) / ( COMPUTE_AUTO_EVERY / 1000.0 ) );
     fuzzy->fuzzify();
     float output = fuzzy->defuzzify( 1 );
-    int tPosition = ( int )( stepper.currentPosition() + ( ( output / 100 ) * ( settings.maxPosition - settings.minPosition ) ) );
-    tPosition = min( settings.maxPosition, tPosition );
-    tPosition = max( settings.minPosition, tPosition );
+    int tPosition = ( int )( stepper.currentPosition() + ( (settings.directionOfDialToIncreaseHeat == ANTI-CLOCKWISE ? 1 : -1) * ( output / 100 ) * ( settings.maxPosition - settings.minPosition ) ) ); //need to change this too i think
+    tPosition = ( settings.directionOfDialToIncreaseHeat == ANTI-CLOCKWISE ? min( settings.maxPosition, tPosition ) : max( settings.maxPosition, tPosition) );
+    tPosition = ( settings.directionOfDialToIncreaseHeat == ANTI-CLOCKWISE ? max( settings.minPosition, tPosition ) : min( settings.minPosition, tPosition) );
     stepper.moveTo( ( settings.currentStep == 5 ? settings.maxPosition : tPosition ) );
   }
 }
@@ -474,13 +476,15 @@ void blinkLCD( uint8_t colour = RED ) {
     lcd.setBacklight( colour );
     lastBacklight = colour;
     if ( colour != WHITE) {
-      tone( BUZZER_WIRE_PWR, BUZZER_FREQUENCY );
+      //tone( BUZZER_WIRE_PWR, BUZZER_FREQUENCY );
+      digitalWrite(BUZZER_WIRE_PWR, HIGH);
     }
   }
   else {
     lcd.setBacklight( OFF );
     lastBacklight = OFF;
-    noTone( BUZZER_WIRE_PWR );
+    //noTone( BUZZER_WIRE_PWR );
+    digitalWrite(BUZZER_WIRE_PWR, LOW);
   }
 }
 
@@ -681,9 +685,11 @@ void readButtonInput() {
 uint8_t readButtons() {
   uint8_t buttons = lcd.readButtons();
   if ( buttons ) {
-    tone( BUZZER_WIRE_PWR, BUZZER_FREQUENCY );
-    delay( 20 );
-    noTone( BUZZER_WIRE_PWR );
+  //tone(BUZZER_WIRE_PWR, BUZZER_FREQUENCY);
+  digitalWrite(BUZZER_WIRE_PWR, HIGH);   // turn the LED on (HIGH is the voltage level)
+  delay(20);
+  //noTone(BUZZER_WIRE_PWR);
+  digitalWrite(BUZZER_WIRE_PWR, LOW);    // turn the LED off by making the voltage LOW
     lastButtonPressed = buttons;
     return 0;              // Wait until button is release before sending
   }
@@ -859,9 +865,12 @@ void processModeChange() {
 
 void initBuzzer() {
   pinMode(BUZZER_WIRE_PWR, OUTPUT);
-  tone(BUZZER_WIRE_PWR, BUZZER_FREQUENCY);
+  //tone(BUZZER_WIRE_PWR, BUZZER_FREQUENCY);
+  digitalWrite(BUZZER_WIRE_PWR, HIGH);   // turn the LED on (HIGH is the voltage level)
   delay(20);
-  noTone(BUZZER_WIRE_PWR);
+  //noTone(BUZZER_WIRE_PWR);
+  digitalWrite(BUZZER_WIRE_PWR, LOW);    // turn the LED off by making the voltage LOW
+
 }
 
 void initPump() {
