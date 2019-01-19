@@ -1,4 +1,4 @@
-const int CONFIG_VERSION = 1;
+const int CONFIG_VERSION = 2;
 
 #define FEATURE_ENABLED_MYSETTINGS
 
@@ -67,7 +67,7 @@ AccelStepper stepper( forwardstep, backwardstep );     // Wrap the stepper in an
 enum operatingState { OFF = 0, IGNITION, AUTO, MAN, PUMP };
 enum pumpStates { NORECIRC = 0, RECIRC };
 enum autoDisplay { RECIPETITLE = 0, STEPTITLE, TA, TIMEREMAINING };
-enum dialDirection ( ANTI-CLOCKWISE = 0, CLOCKWISE );
+enum dialDirection { ANTICLOCKWISE = 0, CLOCKWISE };
 
 struct sensorCalibration {
   double rawLow;
@@ -91,7 +91,7 @@ struct recipe {
 
 struct allSettings {
   int version;
-  int directionOfDialToIncreaseHeat;
+  dialDirection directionOfDialToIncreaseHeat;
   sensorCalibration tempCal;
   double minPosition;
   double maxPosition;
@@ -113,7 +113,7 @@ int configAddress;
 #ifdef FEATURE_ENABLED_MYSETTINGS
 #include "mySettings.h"
 #else
-allSettings settings = { CONFIG_VERSION, ANTI-CLOCKWISE, { 0.0, 100.0 }, 0, 0, -1, 0, 0 };
+allSettings settings = { CONFIG_VERSION, ANTICLOCKWISE, { 0.0, 100.0 }, 0, 0, -1, 0, 0 };
 #endif
 
 
@@ -368,9 +368,9 @@ void processAutomaticMode() {
     fuzzy->setInput( 2, ( error - previousError ) / ( COMPUTE_AUTO_EVERY / 1000.0 ) );
     fuzzy->fuzzify();
     float output = fuzzy->defuzzify( 1 );
-    int tPosition = ( int )( stepper.currentPosition() + ( (settings.directionOfDialToIncreaseHeat == ANTI-CLOCKWISE ? 1 : -1) * ( output / 100 ) * ( settings.maxPosition - settings.minPosition ) ) ); //need to change this too i think
-    tPosition = ( settings.directionOfDialToIncreaseHeat == ANTI-CLOCKWISE ? min( settings.maxPosition, tPosition ) : max( settings.maxPosition, tPosition) );
-    tPosition = ( settings.directionOfDialToIncreaseHeat == ANTI-CLOCKWISE ? max( settings.minPosition, tPosition ) : min( settings.minPosition, tPosition) );
+    int tPosition = ( int )( stepper.currentPosition() + ( (settings.directionOfDialToIncreaseHeat == ANTICLOCKWISE ? 1 : -1) * ( output / 100 ) * ( settings.maxPosition - settings.minPosition ) ) ); //need to change this too i think
+    tPosition = ( settings.directionOfDialToIncreaseHeat == ANTICLOCKWISE ? min( settings.maxPosition, tPosition ) : max( settings.maxPosition, tPosition) );
+    tPosition = ( settings.directionOfDialToIncreaseHeat == ANTICLOCKWISE ? max( settings.minPosition, tPosition ) : min( settings.minPosition, tPosition) );
     stepper.moveTo( ( settings.currentStep == 5 ? settings.maxPosition : tPosition ) );
   }
 }
