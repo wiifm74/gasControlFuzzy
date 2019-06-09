@@ -293,6 +293,7 @@ void initFuzzyLogic() {
   thenGasOutputIncreaseSmall->addOutput( increaseSmall );// Adding corresponding FuzzySet to Consequent object
   FuzzyRuleConsequent* thenGasOutputIncrease = new FuzzyRuleConsequent(); // Instantiating a Consequent to expression
   thenGasOutputIncrease->addOutput( increase );// Adding corresponding FuzzySet to Consequent object
+  
   // FuzzyRule "IF error is Zero THEN gasOutput is zeroChange"
   FuzzyRule* fuzzyRule01 = new FuzzyRule( 1, ifErrorZero, thenGasOutputZeroChange ); // Passing the Antecedent and the Consequent of expression
   fuzzy->addFuzzyRule( fuzzyRule01 ); // Adding FuzzyRule to Fuzzy object
@@ -302,6 +303,7 @@ void initFuzzyLogic() {
   // FuzzyRule "IF error is positive THEN gasOutput is decrease"
   FuzzyRule* fuzzyRule03 = new FuzzyRule( 3, ifErrorP, thenGasOutputDecrease ); // Passing the Antecedent and the Consequent of expression
   fuzzy->addFuzzyRule( fuzzyRule03 ); // Adding FuzzyRule to Fuzzy object
+  
   // Fuzzyrule "IF error is Zero AND error change is positive THEN gasOutput decreaseSmall
   FuzzyRule* fuzzyRule04 = new FuzzyRule( 4, ifErrorZeroANDErrorChangeP, thenGasOutputDecreaseSmall ); // Passing the Antecedent and the Consequent of expression
   fuzzy->addFuzzyRule( fuzzyRule04 ); // Adding FuzzyRule to Fuzzy object

@@ -2,13 +2,16 @@
 
 #define FUZZYSETS_H_
 
-FuzzySet* errorN = new FuzzySet( -100, -100, -10, 0 ); // Negative Error
-FuzzySet* errorZero = new FuzzySet( -15, -10, 0, 10 ); // Zero Error
-FuzzySet* errorP = new FuzzySet( 0, 10, 100, 100 ); // Positive Error
+int errorMultiplier = 0.5
+int changeMultiplier = 1
 
-FuzzySet* errorChangeN = new FuzzySet( -5, -5, -0.1, 0 ); // Negative ErrorChange
-FuzzySet* errorChangeZero = new FuzzySet( -0.1, 0, 0, 0.1 ); // Zero ErrorChange
-FuzzySet* errorChangeP = new FuzzySet( 0, 0.1, 5, 5 ); // Positive ErrorChange
+FuzzySet* errorN = new FuzzySet( -100 * errorMultiplier, -100 * errorMultiplier, -10 * errorMultiplier, 0 * errorMultiplier ); // Negative Error
+FuzzySet* errorZero = new FuzzySet( -15 * errorMultiplier, -10 * errorMultiplier, 0 * errorMultiplier, 10 * errorMultiplier ); // Zero Error
+FuzzySet* errorP = new FuzzySet( 0 * errorMultiplier, 10 * errorMultiplier, 100 * errorMultiplier, 100 * errorMultiplier ); // Positive Error
+
+FuzzySet* errorChangeN = new FuzzySet( -5 * changeMultiplier, -5 * changeMultiplier, -1 * changeMultiplier, 0 * changeMultiplier ); // Negative ErrorChange
+FuzzySet* errorChangeZero = new FuzzySet( -2 * changeMultiplier, 0 * changeMultiplier, 0 * changeMultiplier, 2 * changeMultiplier ); // Zero ErrorChange
+FuzzySet* errorChangeP = new FuzzySet( 0 * changeMultiplier, 1 * changeMultiplier, 5 * changeMultiplier, 5 * changeMultiplier ); // Positive ErrorChange
 
 FuzzySet* decrease = new FuzzySet( -70, -60, -60, -50 ); // decrease gas
 FuzzySet* decreaseSmall = new FuzzySet( -45, -35, -35, -25 ); // small decrease gas
